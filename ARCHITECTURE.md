@@ -430,6 +430,12 @@ known to be one of the four and a permutation cannot break that. It runs inside
 sees. Prompting for randomness was the obvious alternative and was rejected:
 models self-randomise position badly, and an advisory rule cannot be tested.
 
+Validation also rejects choices whose meaning depends on the original position
+(`All of the above`, `Both A and B`, label-prefixed choices, and ordinal option
+references). The Generator's existing bounded schema-repair path then regenerates
+the MCQ before the deterministic permutation runs. Cache schema `v6` prevents
+pre-fix lessons with those choices from being reused.
+
 ## Observability (optional/stretch)
 
 Self-hosted Langfuse if tracing is added. Not required for the core submission.
@@ -527,7 +533,7 @@ volumes:
 
 ## Testing
 
-`cd backend && pytest` — 132 tests. This section lists only tests that exist; an
+`cd backend && pytest` — 140 tests. This section lists only tests that exist; an
 earlier revision described an intended suite as though it were implemented, which
 is exactly the kind of claim a reviewer checks.
 
@@ -535,7 +541,7 @@ is exactly the kind of claim a reviewer checks.
 
 | File | Covers |
 |---|---|
-| `test_schemas.py` (12) | The spec's I/O contract: four distinct options, answer among them, no blanks, `extra="forbid"`, binary reviewer status, fail-requires-feedback |
+| `test_schemas.py` (14 functions; 7 position cases parametrised) | The spec's I/O contract: four distinct, position-independent options, answer among them, no blanks, `extra="forbid"`, binary reviewer status, fail-requires-feedback |
 | `test_pipeline_routing.py` (10) | Graph routing, and that the one-refinement cap holds even when the second review also fails |
 | `test_topic_fidelity.py` (14) | Required topic judgement, forced off-topic failure, delimiter escaping, single-flight envelope reuse, evaluator baselines |
 | `test_reviewer_repair.py` (4) | Reviewer schema repair success, bounded exhaustion, required fields, all eval cases schema-valid |

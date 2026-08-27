@@ -37,6 +37,34 @@ def test_blank_option_rejected():
         MCQ(**{**VALID_MCQ, "options": ["Acute", "Right", "   ", "Straight"]})
 
 
+@pytest.mark.parametrize(
+    "position_dependent_option",
+    [
+        "All of the above",
+        "None of the options below",
+        "Both A and B",
+        "Option A or Option C",
+        "The first option",
+        "The last two choices",
+        "A. An acute angle",
+    ],
+)
+def test_position_dependent_options_rejected(position_dependent_option):
+    options = ["Acute", "Right", "Obtuse", position_dependent_option]
+    with pytest.raises(ValidationError, match="must not depend on positions or labels"):
+        MCQ(question="Which answer is correct?", options=options, answer=position_dependent_option)
+
+
+def test_semantic_both_wording_is_not_mistaken_for_option_labels():
+    answer = "Both evaporation and condensation"
+    mcq = MCQ(
+        question="Which processes are part of the water cycle?",
+        options=[answer, "Only freezing", "Only melting", "Neither process"],
+        answer=answer,
+    )
+    assert mcq.answer == answer
+
+
 def test_blank_question_rejected():
     with pytest.raises(ValidationError):
         MCQ(**{**VALID_MCQ, "question": "   "})

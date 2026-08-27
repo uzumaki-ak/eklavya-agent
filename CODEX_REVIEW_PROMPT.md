@@ -31,7 +31,7 @@ something.
 - **`refinement_count` reuse** — `STAGE_FIELDS` now drives Redis, direct cache,
   persistence, and `single_flight.copy_result`; the actual follower function has
   a regression test.
-- **Cache identity** — `moderation_policy_version=v3`, `schema_version=v4`, and
+- **Cache identity** — `moderation_policy_version=v3`, `schema_version=v6`, and
   both prompt versions are `v5`; canonicalizer remains `v1`.
 - **`ReviewCard` promising a rewrite that never comes** — copy is now
   first/final aware; a failed final says "not approved", not "gets rewritten".
@@ -52,7 +52,7 @@ something.
   that no HTTP throttling exists, the graph diagram corrected (moderation is
   inlined in the generate/refine nodes, not separate graph nodes), and the Testing
   section rewritten to list only tests that run.
-- Test count is 125, all passing. Frontend builds; no source file exceeds 200 lines.
+- Test count is 140, all passing. Frontend builds; no source file exceeds 200 lines.
 
 ---
 

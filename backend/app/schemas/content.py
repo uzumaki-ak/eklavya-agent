@@ -5,9 +5,40 @@ below (answer-in-options, uniqueness) are Python-level and raise ValidationError
 which is why the generator needs a separate schema-repair loop.
 """
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+_RELATIVE_OPTION_RE = re.compile(
+    r"\b(?:all|none|both|either|neither)\s+of\s+(?:the\s+)?"
+    r"(?:(?:options?|choices?|answers?)\s+)?(?:above|below)\b"
+    r"|\b(?:first|second|third|fourth|last)(?:\s+(?:two|three))?\s+"
+    r"(?:options?|choices?|answers?)\b",
+    re.IGNORECASE,
+)
+_OPTION_LABEL_EXPRESSION_RE = re.compile(
+    r"^(?:(?:both|either|neither)\s+)?"
+    r"(?:(?:options?|choices?|answers?)\s+)?[A-D1-4]\s*"
+    r"(?:and|or|nor|&)\s*"
+    r"(?:(?:options?|choices?|answers?)\s+)?[A-D1-4]$",
+    re.IGNORECASE,
+)
+_OPTION_LABEL_PREFIX_RE = re.compile(r"^[A-D]\s*[.):\-]\s+", re.IGNORECASE)
+
+
+def _depends_on_option_position(option: str) -> bool:
+    """Return whether reordering would change or mislabel this option's meaning."""
+    value = option.strip()
+    return any(
+        pattern.search(value)
+        for pattern in (
+            _RELATIVE_OPTION_RE,
+            _OPTION_LABEL_EXPRESSION_RE,
+            _OPTION_LABEL_PREFIX_RE,
+        )
+    )
 
 
 class MCQ(BaseModel):
@@ -33,6 +64,11 @@ class MCQ(BaseModel):
         normalized = [o.strip() for o in self.options]
         if any(not o for o in normalized):
             raise ValueError("options must not be blank")
+        if any(_depends_on_option_position(o) for o in normalized):
+            raise ValueError(
+                "options must not depend on positions or labels such as "
+                "'all of the above', 'both A and B', or 'the first option'"
+            )
         if len(set(normalized)) != 4:
             raise ValueError("options must be four distinct strings")
         if self.answer.strip() not in normalized:
