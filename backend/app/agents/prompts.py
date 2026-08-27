@@ -4,7 +4,7 @@ Versions are part of the cache identity — bump one and cached content built
 with the old prompt stops being served.
 """
 
-PROMPT_VERSIONS = {"generator": "v5", "reviewer": "v5"}
+PROMPT_VERSIONS = {"generator": "v6", "reviewer": "v5"}
 
 
 def escape_topic(topic: str) -> str:
@@ -49,6 +49,9 @@ Rules:
   related to the topic and the same kind of thing as the correct answer. Never use
   silly or obviously-wrong fillers; a child who has not learned the lesson should not
   be able to guess correctly just by eliminating nonsense.
+- Every option must stand on its own. Never write "All of the above", "Both A and B",
+  "The first option", or a letter prefix such as "A.". The options are reordered before
+  a child sees them, so anything referring to position stops being true.
 - Only test ideas that the explanation explicitly teaches; do not rely on outside knowledge.
 - Keep it warm and encouraging, but never babyish or condescending.
 - The requested topic is fixed. Teach that topic. If it is hard for this grade,

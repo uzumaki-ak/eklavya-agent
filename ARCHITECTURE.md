@@ -436,6 +436,10 @@ references). The Generator's existing bounded schema-repair path then regenerate
 the MCQ before the deterministic permutation runs. Cache schema `v6` prevents
 pre-fix lessons with those choices from being reused.
 
+The generator prompt (`v6`) states the same rule. Two layers again, for the usual
+reason: the prompt rule is advisory and the validator is not — but a model told up
+front costs no repair round, and each repair is a whole extra LLM call.
+
 ## Observability (optional/stretch)
 
 Self-hosted Langfuse if tracing is added. Not required for the core submission.
