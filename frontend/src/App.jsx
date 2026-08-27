@@ -56,8 +56,16 @@ export default function App() {
           {/* Stage 2 — the Reviewer's verdict, shown pass or fail */}
           <ReviewCard review={job.initial_review} />
 
-          {/* Stage 3 — the single refinement pass, only if the reviewer failed it */}
-          <ContentCard content={job.refined_output} variant="final" />
+          {/* Stage 3 — the single refinement pass, only if the reviewer failed it.
+              A rewrite that fails its own check stays visible (the brief requires
+              showing it) but is marked unapproved with the quiz disabled, so a
+              child cannot practise on content the checker just rejected. */}
+          <ContentCard
+            content={job.refined_output}
+            variant="final"
+            title={job.topic}
+            superseded={job.final_review?.status === "fail"}
+          />
           <ReviewCard review={job.final_review} isFinal />
 
           {showLoader && <FunFactLoader stage={currentStage(job)} />}

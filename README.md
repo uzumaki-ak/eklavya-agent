@@ -74,7 +74,7 @@ Conventions: Python is `snake_case` / `PascalCase` classes (PEP 8); JS is
 | Concern | Approach |
 |---|---|
 | Provider rate limits | Semaphore caps in-flight calls; one-process RPM safety cap; Tenacity retries transient provider/network errors and honours retry hints |
-| Runaway jobs | One hard `asyncio.timeout_at` per job (240s), above which the run terminates cleanly |
+| Runaway jobs | One hard `asyncio.timeout_at` per job (120s), above which the run terminates cleanly |
 | Duplicate work | Postgres job leasing with a fencing token; a superseded worker cannot commit |
 | Duplicate submissions | `Idempotency-Key` bound to a request hash; reuse with a different payload returns `409` |
 | Repeat topics | Versioned exact-match Redis cache storing the full envelope |

@@ -7,12 +7,24 @@ claimed "pass", so a cached failing review was reported as having passed.
 
 COMPLETED = {"completed_pass", "completed_fail"}
 
-STAGE_FIELDS = ("original_output", "initial_review", "refined_output", "final_review")
+# refinement_count belongs here, not alongside the other counters: it is part of
+# what the UI renders, and both reuse paths (worker cache/single-flight and the
+# direct API cache hit) copy the envelope verbatim. Leaving it out made every
+# reused run report 0 refinements while visibly showing a refined output.
+STAGE_FIELDS = (
+    "original_output",
+    "initial_review",
+    "refined_output",
+    "final_review",
+    "refinement_count",
+)
 
 
 def envelope_from_state(state: dict) -> dict:
     """Stage outputs only — no status, no internals."""
-    return {field: state.get(field) for field in STAGE_FIELDS}
+    envelope = {field: state.get(field) for field in STAGE_FIELDS}
+    envelope["refinement_count"] = state.get("refinement_count", 0) or 0
+    return envelope
 
 
 def status_from_envelope(envelope: dict) -> str:

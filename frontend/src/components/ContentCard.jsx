@@ -10,8 +10,23 @@ import Quiz from "./Quiz";
 import { EraserFixing, PencilWriting } from "./icons";
 
 const VARIANTS = {
-  draft: { Icon: PencilWriting, tagClass: "tag-draft", label: "First try" },
-  final: { Icon: EraserFixing, tagClass: "tag-final", label: "Improved version" },
+  draft: {
+    Icon: PencilWriting,
+    tagClass: "tag-draft",
+    label: "First try",
+    // A rejected first draft is followed by a rewrite.
+    rejectedNote: "The checker found problems with this one, so it was rewritten below.",
+    expandLabel: "Show what the first try said",
+  },
+  final: {
+    Icon: EraserFixing,
+    tagClass: "tag-final",
+    label: "Improved version",
+    // The refinement pass is capped at one, so a rejected rewrite is final.
+    // Promising another rewrite here would be a lie.
+    rejectedNote: "The checker still found problems, so this one is not approved.",
+    expandLabel: "Show what the rewrite said",
+  },
 };
 
 export default function ContentCard({ content, variant = "draft", title, superseded = false }) {
@@ -26,7 +41,7 @@ export default function ContentCard({ content, variant = "draft", title, superse
 
   if (!content) return null;
 
-  const { Icon, tagClass, label } = VARIANTS[variant];
+  const { Icon, tagClass, label, rejectedNote, expandLabel } = VARIANTS[variant];
 
   return (
     <section className={`card ${variant} ${superseded ? "superseded" : ""}`}>
@@ -35,11 +50,7 @@ export default function ContentCard({ content, variant = "draft", title, superse
         {label}
       </span>
 
-      {superseded && (
-        <p className="superseded-note">
-          The checker found problems with this one, so it was rewritten below.
-        </p>
-      )}
+      {superseded && <p className="superseded-note">{rejectedNote}</p>}
 
       {title && <h2>{title}</h2>}
 
@@ -53,7 +64,7 @@ export default function ContentCard({ content, variant = "draft", title, superse
       <div className="card-actions">
         {superseded && !expanded && (
           <button className="raw-toggle" onClick={() => setExpanded(true)}>
-            Show what the first try said
+            {expandLabel}
           </button>
         )}
         <button className="raw-toggle" onClick={() => setShowRaw((open) => !open)}>

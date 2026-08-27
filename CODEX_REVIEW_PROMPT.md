@@ -1,50 +1,64 @@
-## Context — reviewing a provider abstraction added after your GO
+## Context — a second opinion on a fix plan, before any code is written
 
-You previously green-lit this implementation for live testing. Live testing then failed for a non-code reason: the Anthropic account has **$0 credits** and no free trial available in the user's region (India), so every call returned `400 invalid_request_error — Your credit balance is too low`. The user cannot spend money on this.
+You have reviewed this codebase across several rounds already. It is now deployed and working. An independent evaluator then rated it against the original assignment and found real defects. I have a proposed fix plan. **I want your opinion on the plan before I implement it — do not write code, do not edit files.**
 
-Two calls were made before stopping; both were rejected at the billing check before generating tokens, so nothing was consumed. That failure did validate the whole pipeline end to end — nginx `/api` proxy → FastAPI → run row created → SAQ enqueue → worker pickup → DB lease claim → single-flight election → provider call → error caught, terminalized as `generator_error`, job finished cleanly. The 400 was correctly **not** retried, since it isn't in the retry predicate.
+Read `ARCHITECTURE.md` and the relevant source, then push back where you disagree.
 
-Google Gemini has a genuinely free API tier (no card, ~15 req/min, 1500 req/day), so the code was refactored to support both providers. **Review that refactor.**
+### One thing that is NOT up for discussion
 
-Same evidence bar as every previous round: cite the actual API/signature/doc behind each claim, and say explicitly when you cannot verify something rather than asserting it.
+The evaluator's largest criticism was scope: the brief said *"you do not need a full agent framework — simple Python classes or functions are sufficient"*, and this submission ships a queue, worker, DB leasing with fencing, single-flight election, caching, rate limiting and a provider abstraction. **The author has considered that and is deliberately keeping it.** Do not spend your review re-arguing it or recommending deletion. Assume the architecture stays as-is and evaluate the fixes within it.
 
-### What changed
+---
 
-**New package `app/agents/providers/`** — replaces the previously Anthropic-hardcoded `client.py`:
-- `base.py` — `LLMProvider` Protocol (`generate`, `is_retryable`, `retry_after`) and `LLMRoleConfig` (moved here from `client.py`).
-- `claude.py` — the original Anthropic path, unchanged in behaviour. Still `AsyncAnthropic(max_retries=0)`, still uses `messages.parse(output_format=...)` / `parsed_output`, still treats 408/409/5xx + RateLimit/Timeout/Connection as retryable and everything else (401/400/403) as permanent.
-- `gemini.py` — new. Uses `google-genai`: `client.aio.models.generate_content(model=..., contents=user, config=types.GenerateContentConfig(system_instruction=..., max_output_tokens=..., response_mime_type="application/json", response_schema=PydanticModel))`, reading `response.parsed`. Treats `genai_errors.APIError` with code in {408,429,500,502,503,504} as retryable. Parses Gemini's `"retryDelay": "27s"` out of the error body via regex to honour its own backoff hint. A `None` `response.parsed` raises `ValueError` so the existing schema-repair loop handles it.
-- `__init__.py` — `get_provider()` selected by `settings.llm_provider` (`"claude"` | `"gemini"`), lazily imported and `lru_cache`d, plus the shared `GENERATOR_CONFIG` / `REVIEWER_CONFIG`.
+## The defects found
 
-**`client.py` rewritten** — `call_claude` renamed to `call_llm`, now provider-agnostic. Signature changed from `messages: list[dict]` to `user: str` (both agents updated). Retry predicate now delegates to `provider.is_retryable(e)`; `_clamped_wait` now delegates to `provider.retry_after(e)`. The deadline stop, per-attempt deadline check, semaphore-inside-retry, transport counters, and per-call `asyncio.timeout` are all unchanged.
+**1. Moderation is inverted, not merely weak.** `app/services/moderation.py` uses a regex pre-filter. Verified live:
 
-**New `app/services/rate_limit.py`** — `RequestsPerMinuteLimiter`, a sliding-60s-window limiter acquired **outside** the semaphore in `call_llm`. Rationale: the semaphore caps concurrency, not rate, and Gemini's free tier is 15 requests/*minute*, so a burst of short calls could exhaust the quota without ever exceeding concurrency. Raises `PipelineDeadlineExceeded` if waiting would pass the job deadline. Disabled when `llm_requests_per_minute <= 0`.
+| Topic | Result |
+|---|---|
+| "sexual reproduction in plants" | **blocked** |
+| "why drugs are harmful to the body" | **blocked** |
+| "sexism in the workplace" | **blocked** |
+| "how to make a bomb at home" | allowed |
+| "ways to hurt yourself" | allowed |
 
-**Config** — `llm_provider` (default `"gemini"`), `gemini_api_key`, `llm_requests_per_minute` (default 14), `llm_max_concurrency` lowered 15 → 4 for the free tier. Model IDs defaulted to `gemini-3.7-flash`.
+`\b(bomb|explosive|firearm|weapon)\s*(making|building|how to)` requires the verb *after* the noun, so it matches almost no natural phrasing. `ARCHITECTURE.md` discloses this as "demo-grade", which covers weak but arguably not inverted. Audience is school-age children.
 
-**Imports moved** — `db/runs.py` and `services/cache.py` now import `GENERATOR_CONFIG`/`REVIEWER_CONFIG` from `app.agents.providers` instead of `app.agents.client`.
+**2. The Reviewer is never told the topic.** Confirmed: `REVIEWER_USER` in `app/agents/prompts.py` interpolates only `{grade}` and `{content}`; the string `topic` does not appear in `app/agents/reviewer.py`. Consequences:
+- Reviewer criterion 4 ("Coverage — does the explanation teach the essential idea requested by the topic?") is structurally unevaluable.
+- Nothing anywhere asserts that `refined_output` is still about the requested topic.
+- The Reviewer's prompt does not stop it from rejecting the *request* rather than critiquing the *draft*. Live example: Grade 1 / "quantum entanglement" → Reviewer says *"Please replace the topic with age-appropriate 1st-grade science content"* → Generator writes a lesson on solids/liquids/gases → second review returns `pass` → UI shows "Checked and approved", page still headed "quantum entanglement". A child asked one question and got a confident green-ticked answer to a different one.
 
-**Dependency** — added `google-genai>=1.60` to `pyproject.toml`.
+Note the author already solved this exact class of problem for *grade* (injected as prompt context, documented in ARCHITECTURE.md because the spec's Reviewer input is content-only) and missed the identical gap for topic.
 
-### Verified locally after the refactor
-All Python compiles; no stale `call_claude` references remain; no file exceeds 200 lines. **Nothing has run against Gemini yet** — no key was available at the time of writing.
+**3. `refinement_count` is always 0 on cache hits.** It is not in `STAGE_FIELDS`, so `persist_reused` never writes it — cache hits and single-flight followers report 0 even with `refined_output` and `final_review` present. The README promises complete envelopes on cache hits.
 
-### Specific things to check
+**4. `ARCHITECTURE.md` claims things that are not true.** Its Testing section, under a heading saying IMPLEMENTED, lists fencing, lease-cancellation, single-flight, idempotency, golden-set and moderation tests. None exist. It also carries stale constants (240s/300s/4 attempts vs the shipped 120/150/2), draws `moderate_output` as graph nodes when it is inlined in `generate_original_node`/`refine_node`, and claims per-IP rate limiting that does not exist.
 
-1. **`google-genai` API correctness** — verify against the current SDK that `client.aio.models.generate_content(...)`, `types.GenerateContentConfig(system_instruction=..., response_mime_type=..., response_schema=<PydanticModel>)`, and `response.parsed` are the correct current bindings, and that `max_output_tokens` is the right parameter name. Confirm `google.genai.errors.APIError` exposes a `.code` attribute as `gemini.py` assumes. **I could not verify any of this at runtime.**
+**5. Reviewer calibration.** It passes questions answerable by pure elimination ("A warm cozy blanket" as a black-hole distractor) despite its own criterion 6 telling it to fail exactly that. Distinct from #2: here it has the information and does not apply it.
 
-2. **Model ID currency** — `gemini-3.7-flash` was chosen from a web search claiming an Aug 13 2026 release, with `gemini-3.6-flash` noted as the older stable fallback. Confirm both IDs are real, currently served, and on the free tier. I got this wrong once already (originally wrote `gemini-2.5-flash`, which is two generations stale), so please check rather than assume.
+---
 
-3. **Rate limiter correctness** — `RequestsPerMinuteLimiter.acquire()` releases `self._lock` before sleeping and re-loops. Check for: a lost-wakeup or starvation bug under concurrency, whether the timestamp is correctly recorded at acquire rather than completion, and whether the `min(wait_for, 1.0)` re-check loop can busy-spin. Also confirm placing it outside the semaphore is right, and that raising `PipelineDeadlineExceeded` from inside the Tenacity-wrapped `_attempt` correctly terminates rather than being retried (it is deliberately not in the retry predicate).
+## The proposed plan
 
-4. **Provider abstraction leaks** — confirm nothing outside `providers/` still assumes Anthropic. In particular check that `_clamped_wait` calling `get_provider()` per retry is safe, and that the `lru_cache` on `get_provider()` doesn't cause problems across the API and worker processes.
+1. **Rewrite the moderation filter** so it stops blocking legitimate curriculum topics and starts catching the phrasings it currently misses. Keep it local/regex (no new external dependency), but built from higher-precision patterns with intent context rather than bare nouns.
+2. **Pass the topic to the Reviewer**, so criterion 4 can actually fire.
+3. **Constrain the Reviewer to critiquing the draft**, never to rejecting or substituting the requested topic. If a topic genuinely cannot be taught at that grade, that should surface honestly to the user rather than becoming a silent swap.
+4. **Add a topic-fidelity check** so a refinement cannot change the subject — a run that drifts should fail visibly rather than complete with a green tick.
+5. **Fix `refinement_count`** on the reused-envelope path, and give the refined card a title so the page does not read as though the refined lesson answers the original heading.
+6. **Write the missing tests**, prioritising moderation and the Reviewer — the two components with zero coverage and the two the assignment is actually about.
+7. **Correct `ARCHITECTURE.md`** so every claim matches the code: fix the constants, the diagram, remove the rate-limiting claim, and make the Testing section describe only tests that exist.
+8. **Deliberately deferred:** deep Reviewer calibration for distractor quality (#5). The reasoning is that tuning it without a hand-labelled golden set risks swinging into over-rejection, which is a worse failure than the current leniency, and #2 already removes the largest miss.
 
-5. **Cache identity** — the digest includes `GENERATOR_CONFIG.model_id` / `REVIEWER_CONFIG.model_id`, so switching provider changes the model IDs and therefore invalidates cached content. Confirm that actually holds, and that no cached Claude-generated content could be served while running Gemini.
+---
 
-6. **Anthropic path still intact** — confirm `LLM_PROVIDER=claude` still works exactly as it did when you green-lit it, so a Claude demo needs only credits and a config change.
+## What I want from you
 
-7. Anything that breaks on `docker compose up --build` with the new dependency, and anything in the Docker/Compose setup that the new env vars require but that is missing.
+1. **Is the plan right?** Anything mis-prioritised, anything that will not actually fix the defect it targets.
+2. **Item 1 specifically** — is a hardened regex defensible for a child-facing product, or is the honest answer that only a hosted classifier will do and anything else is theatre? Say so if so.
+3. **Item 4 specifically** — how would you implement a topic-fidelity check without it becoming a third LLM call or a brittle keyword match? Is failing the run the right outcome, or is there a better one?
+4. **Item 8** — do you agree calibration should be deferred, or is shipping a Reviewer that demonstrably ignores its own criterion 6 worse than the over-rejection risk?
+5. **Anything the evaluator and I both missed.** You know this codebase; the evaluator saw it fresh. Assume there are defects neither of us named.
+6. Flag any fix that would **break something currently working**.
 
-### Output
-
-Group by severity: (a) breaks at import/startup, (b) breaks at runtime on the first real Gemini call, (c) breaks only under concurrency/rate-limit pressure, (d) quality. For each: file:line, what's wrong, evidence, concrete fix. Then a clear go / no-go for live testing against Gemini.
+Same evidence bar as previous rounds: cite file and line, verify claims against code rather than documentation, and say explicitly when you cannot confirm something. Opinion and reasoning only — no edits.

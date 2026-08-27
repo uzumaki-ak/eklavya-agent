@@ -1,6 +1,14 @@
 # Eklavya AI Assessment — Architecture Plan
 
-**Revision 7 — IMPLEMENTED.** Updated 27 Aug 2026 after the Gemini provider review.
+**Revision 8 — IMPLEMENTED.** Updated 27 Aug 2026 after an independent evaluation
+against the assignment brief.
+
+Rev 8 fixes what that evaluation found: moderation failed in both directions, the
+Reviewer was never told the topic (so it approved a lesson on the wrong subject),
+`refinement_count` was lost on both reuse paths, a rejected rewrite still offered a
+playable quiz, and this document claimed constants and tests that did not exist.
+Constants below are checked against `app/core/config.py`; the Testing section lists
+only tests that run.
 
 ## Source requirement (from assessment PDF)
 
@@ -38,11 +46,11 @@ class AgentState(TypedDict):
 ```
 moderate_topic → blocked/error → END
   → clear: generate_original → deadline/retries exhausted: "generator_error" → END
-      → success: moderate_output(original_output) → blocked/error → END
+      → success: [moderate output — inlined in generate_original_node] → blocked/error → END
           → clear: review_original → deadline/retries exhausted: "reviewer_error" → END (never fabricate a verdict)
               → pass: END
               → fail: refine_once (writes ONLY refined_output)
-                  → moderate_output(refined_output) → blocked/error → END
+                  → [moderate output — inlined in refine_node] → blocked/error → END
                   → clear: review_refined → END regardless of pass/fail
 ```
 
@@ -111,7 +119,7 @@ Cross-field rules raise local `pydantic.ValidationError`, not caught by the tran
 **Fixed (round 4, points 2 and 3)**: the deadline was previously a soft check re-evaluated before each attempt — it didn't cover semaphore waits, and Tenacity's backoff could sleep past it regardless. Now one outer `asyncio.timeout_at(deadline)` wraps the *entire* pipeline (semaphore waits, retries, repair loops, follower waits — everything), which is the actual hard boundary. A pipeline-level timeout is explicitly distinguished from a per-call timeout so the former is terminal, not retried.
 
 ```python
-PIPELINE_DEADLINE_SECONDS = 240   # hard internal budget; SAQ job timeout (300s) is a ~60s cleanup margin above it, not the primary guard
+PIPELINE_DEADLINE_SECONDS = 120   # hard internal budget; SAQ job timeout (150s) is a ~30s cleanup margin above it, not the primary guard
 
 class LLMCallTimeout(Exception): pass
 class PipelineDeadlineExceeded(Exception): pass
@@ -145,7 +153,7 @@ async def call_anthropic(config: LLMRoleConfig, messages, output_format, deadlin
         raise PipelineDeadlineExceeded()   # never issue a request once the budget is already gone
 
     @retry(
-        stop=stop_after_attempt(4) | _deadline_stop(deadline),   # clamping the wait to 0 doesn't stop retrying — a separate stop condition is required
+        stop=stop_after_attempt(2) | _deadline_stop(deadline),   # clamping the wait to 0 doesn't stop retrying — a separate stop condition is required
         wait=_clamped_wait(deadline),
         retry=retry_if_exception(
             lambda e: isinstance(e, (RateLimitError, APITimeoutError, APIConnectionError, LLMCallTimeout)) or _is_retryable_status(e)
@@ -193,7 +201,7 @@ async def run_pipeline(run_id, grade, topic) -> None:
 ```
 
 **Request ceiling**: one `call_llm` invocation has at most 4 Tenacity attempts,
-but the 240-second outer pipeline deadline is the controlling wall-clock bound.
+but the 120-second outer pipeline deadline is the controlling wall-clock bound.
 Gemini 3.7 runs at `thinking_level="low"` for this simple educational workload;
 Google documents that level for minimizing latency and cost. A 40-second call
 watchdog, two transport attempts, and a 120-second whole-job deadline prevent
@@ -205,7 +213,7 @@ one active provider per deployment.
 
 ## Queue/worker: SAQ + Redis
 
-Pin `saq[redis]==0.26.4`. SAQ job timeout **300s** — ~60s cleanup margin above the 240s internal deadline, not the primary guard (the outer `timeout_at` above is). Heartbeat enabled, `await ctx["job"].update()` at each node boundary. Sweep interval, heartbeat threshold, shutdown grace period kept consistent and shorter than 300s. SAQ's `key` dedupes *enqueue* only — see Idempotency & job leasing for the real correctness boundary.
+Pin `saq[redis]==0.26.4`. SAQ job timeout **150s** — ~30s cleanup margin above the 120s internal deadline, not the primary guard (the outer `timeout_at` above is). Heartbeat enabled, refreshed by a background task every 10s for the life of the job (a single call at start does not survive a multi-minute pipeline). Sweep interval, heartbeat threshold, shutdown grace period kept consistent and shorter than 150s. SAQ's `key` dedupes *enqueue* only — see Idempotency & job leasing for the real correctness boundary.
 
 ## Idempotency & job leasing
 
@@ -250,7 +258,7 @@ RETURNING *;
 
 ## Caching
 
-**Fixed (round 4, point 1)**: the `content_flights` claim query previously assumed a follower gets back a row showing the leader's identity — but Postgres's `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING` returns **zero rows**, not the existing row, whenever the `WHERE` clause blocks the update (i.e. exactly the follower case, when someone else's flight is legitimately active). A follower has to fall back to a separate `SELECT`. Also added: a `'failed'` terminal state so followers don't wait forever on a crashed leader, a shorter renewable lease (a 5-minute flight lease was uncomfortably close to the 300s SAQ timeout), fenced leader-completion, follower polling with jitter bounded by the follower's own deadline, and a durable `result_run_id` so a completed result survives Redis eviction.
+**Fixed (round 4, point 1)**: the `content_flights` claim query previously assumed a follower gets back a row showing the leader's identity — but Postgres's `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING` returns **zero rows**, not the existing row, whenever the `WHERE` clause blocks the update (i.e. exactly the follower case, when someone else's flight is legitimately active). A follower has to fall back to a separate `SELECT`. Also added: a `'failed'` terminal state so followers don't wait forever on a crashed leader, a shorter renewable lease (a 5-minute flight lease was uncomfortably close to the SAQ job timeout), fenced leader-completion, follower polling with jitter bounded by the follower's own deadline, and a durable `result_run_id` so a completed result survives Redis eviction.
 
 ```sql
 content_flights(
@@ -349,11 +357,60 @@ PostgreSQL 18-compatible schema.
 
 Moderate topic before generation; moderate `original_output`/`refined_output` independently before exposure. Flag → `moderation_blocked`, terminates, never shown. Service failure → `moderation_error`, distinct status, fails closed with different messaging/telemetry. Each check persisted independently in `moderation_results`.
 
-> **Implementation status (deliberate deviation):** the shipped `services/moderation.py` uses a **local regex pre-filter**, not an independent hosted moderation API. The routing, fail-closed behaviour, and `blocked` vs `error` distinction are all real, but the detector itself is demo-grade — it catches blatant cases only and is not equivalent to a hosted classifier. **This must be replaced before real children use the product.** It is called out here rather than left implicit because the gap is a safety one, not a cosmetic one.
+**Matching intent, not nouns.** The first filter matched bare words (`sex`, `drugs`,
+`bomb`) and expected the noun before the verb for weapons. On a school product that
+is the wrong shape, and it failed in *both* directions — verified live:
+
+| Topic | Old filter | Now |
+|---|---|---|
+| "sexual reproduction in plants" | blocked | allowed |
+| "why drugs are harmful to the body" | blocked | allowed |
+| "sexism in the workplace" | blocked | allowed |
+| "how to make a bomb at home" | **allowed** | blocked |
+| "ways to hurt yourself" | **allowed** | blocked |
+
+A topic is now blocked when it pairs an *instruction- or acquisition-seeking intent*
+with a *harmful object*, or matches a short list of phrases harmful under any
+framing. Nouns alone never block. A help-seeking override means "how to help someone
+who self-harms" reads as educational rather than as a request for method.
+`tests/test_moderation.py` pins all 18 cases in both directions.
+
+> **Still demo-grade, and this matters.** It is a high-precision local pre-filter,
+> not production child safety: it cannot reason about context, and an obfuscated
+> request will get through. **Replace it with a hosted classifier before real
+> children use this.** Bumping `moderation_policy_version` (now `v2`) invalidates
+> content cached under the old rules — without that, lessons the broken filter
+> cleared would keep being served.
 
 ## Reviewer agent quality (LLM-as-judge grounding)
 
-Binary `pass`/`fail` per spec. Each `feedback` item cites a specific sentence/question. Golden set of 10-20 hand-labeled examples before trusting the Reviewer with real traffic; target 75-90% agreement, track precision/recall on the `fail` class given likely imbalance.
+Binary `pass`/`fail` per spec. Each `feedback` item cites a specific sentence or
+question number.
+
+**The Reviewer is given the topic, and topic coverage is enforced in code.** It
+previously received only grade and content, which made its own coverage criterion
+unevaluable — and produced a live failure: Grade 1 / "quantum entanglement" came
+back as an *approved* lesson about solids and liquids. Three changes:
+
+1. `REVIEWER_USER` now interpolates the topic, so criterion 4 can actually fire.
+2. The model answers into `ReviewerJudgement`, which carries an internal
+   `addresses_requested_topic: bool`. A `False` there **forces** `status="fail"`
+   in a Pydantic validator — the model cannot approve off-topic content whatever
+   verdict it returns. The field is dropped by `to_output()` before the response
+   reaches the API, so the spec's public `{status, feedback}` shape is unchanged.
+3. The Reviewer is instructed never to ask for the topic to be replaced (it is
+   reviewing a draft, not renegotiating the request), and the refinement prompt is
+   told to ignore any such instruction if one arrives anyway. Two layers, because
+   the prompt rule is advisory and the validator is not.
+
+**Measured, not tuned.** `tests/reviewer_golden_set.py` holds 10 hand-labelled cases
+including the two known live misses (elimination-only distractors, near-duplicate
+options). Deliberately no tuning yet: changing the prompt without a baseline swings
+into over-rejection, which is a worse failure than the leniency it fixes.
+
+The user-supplied topic is wrapped in `<topic>` tags with both prompts stating that
+its contents are the subject to teach, never instructions — it is untrusted input
+being interpolated into a prompt.
 
 ## Observability (optional/stretch)
 
@@ -364,7 +421,10 @@ Self-hosted Langfuse if tracing is added. Not required for the core submission.
 - `POST /generate {grade, topic}` (optional `Idempotency-Key`) → `202 {job_id}`, or `409` on key/payload mismatch
 - `GET /jobs/{job_id}` → `{status, original_output, initial_review, refined_output, final_review}`
 - Optional `GET /jobs/{job_id}/stream` (SSE)
-- Basic per-IP/key rate limiting, health check endpoint
+- Health check endpoint (`/health` readiness, `/health/live` liveness)
+- **No HTTP rate limiting.** `services/rate_limit.py` caps LLM requests per minute,
+  which is a provider-quota guard, not request throttling. A public deployment is
+  therefore unauthenticated and unthrottled — see DEPLOYMENT.md.
 
 ## Frontend
 
@@ -449,16 +509,46 @@ volumes:
 
 ## Testing
 
-- Unit tests for both agents with mocked LLM calls, including the MCQ validator and blank-string rejection.
-- Schema-repair test: shape-valid-but-semantically-invalid response triggers exactly one bounded repair sequence.
-- **Deadline test**: a mocked slow/failing LLM client causes the outer `timeout_at` to fire before the theoretical 1440s ceiling, surfacing `error_code="pipeline_deadline_exceeded"` — and verify a per-call `LLMCallTimeout` is retried while a pipeline-level timeout is not.
-- **Fencing test** (corrected description): worker A holds a lease; force its lease to expire; worker B reclaims it (bumping `lease_epoch`); worker A's subsequent write, still carrying the old epoch, affects zero rows and is discarded. Expiry alone doesn't reject anything — only an actual reclaim does.
-- **Lease-guard cancellation test**: a job's renewal task receives zero rows back (epoch changed elsewhere) and the pipeline's main task is cancelled promptly, not left running to completion.
-- **Idempotency test**: same `Idempotency-Key` + same payload submitted twice → single job. Same key + different payload → `409`.
-- **Single-flight test**: two sessions requesting the same brand-new `(grade, topic)` concurrently → one leader in `content_flights`, one follower falls back to the `SELECT` path, waits, and reuses the leader's result via `result_run_id` — not two independent LLM calls.
-- Golden-set agreement test for the Reviewer.
-- End-to-end integration test covering moderation-block, moderation-error, and technical-error paths.
-- Small realistic load test (locust or similar), tens/low-hundreds concurrent submissions.
+`cd backend && pytest` — 77 tests. This section lists only tests that exist; an
+earlier revision described an intended suite as though it were implemented, which
+is exactly the kind of claim a reviewer checks.
+
+**What is covered**
+
+| File | Covers |
+|---|---|
+| `test_schemas.py` (12) | The spec's I/O contract: four distinct options, answer among them, no blanks, `extra="forbid"`, binary reviewer status, fail-requires-feedback |
+| `test_pipeline_routing.py` (10) | Graph routing, and that the one-refinement cap holds even when the second review also fails |
+| `test_topic_fidelity.py` (9) | The Reviewer receives the topic; an off-topic judgement is forced to fail in code; the internal field never leaks into the public schema |
+| `test_provider_refactor.py` (8) | Provider abstraction, retry predicates, config/cache-key coherence |
+| `test_moderation.py` (4, parametrised over 18 topics) | Curriculum topics pass; harm-instruction requests are blocked; the output gate runs the same rules |
+| `test_runner_resilience.py` (4) | Deadline termination, flight-leadership loss, rollback-then-terminalize |
+| `test_canonicalize.py` (4) | Cache-key normalisation and its alias map |
+| `test_rate_limit.py` (3) | Sliding-window RPM limiter |
+
+**Reviewer evaluation set** — `tests/reviewer_golden_set.py` holds 10 hand-labelled
+cases (good on-topic, coherent-but-off-topic, factually wrong, too advanced,
+question-not-taught, elimination-only distractors, near-duplicate options, hard
+topic simplified well, impossible answer, partially off-topic). Run
+`python -m tests.run_reviewer_eval` — it needs an API key and spends quota, so it
+is a script rather than part of `pytest`. Read *recall on cases that should fail*,
+not raw agreement: the classes are imbalanced, so a Reviewer that passed
+everything would still score respectably on agreement while being useless.
+
+**What is deliberately NOT covered, and why**
+
+- **Leasing, fencing, single-flight, idempotency** have no integration tests.
+  They need a live Postgres and concurrent workers; `test_runner_resilience.py`
+  covers the logic paths with fakes, which is not the same thing. Treat these as
+  reasoned-about rather than proven.
+- **Reviewer prompt tuning.** The golden set measures; nothing tunes against it
+  yet. Tuning without a baseline swings into over-rejection, which is worse than
+  the leniency it would fix.
+- **No CI.** Tests run locally and in the container, not on push.
+
+**Load test** — `loadtest/locustfile.py`, tens/low-hundreds of concurrent
+submissions. `POST /api/generate` should stay in the tens of milliseconds since it
+only enqueues; completion time is dominated by provider latency.
 
 ## Explicitly rejected, with reasoning
 

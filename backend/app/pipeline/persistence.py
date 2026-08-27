@@ -44,8 +44,9 @@ async def persist_result(ctx, token: int, state: dict) -> None:
                         await runs.write_stage(
                             session, ctx.run_id, ctx.worker, ctx.epoch,
                             status=status,
+                            # refinement_count now travels inside the envelope, so
+                            # every path that copies an envelope carries it too.
                             **envelope,
-                            refinement_count=state.get("refinement_count", 0),
                             schema_repair_attempts=state.get("schema_repair_attempts", 0),
                             transport_attempts_total=state.get("transport_attempts_total", 0),
                             logical_llm_calls=state.get("logical_llm_calls", 0),

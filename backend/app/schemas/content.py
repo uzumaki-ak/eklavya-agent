@@ -64,11 +64,66 @@ class GeneratorOutput(BaseModel):
         return v
 
 
+TOPIC_DRIFT_FEEDBACK = (
+    "This lesson does not teach the topic that was requested. "
+    "Rewrite it so it teaches the requested topic at this grade level."
+)
+
+
+class ReviewerJudgement(BaseModel):
+    """What the Reviewer model actually returns.
+
+    `addresses_requested_topic` exists because the Reviewer's judgement on
+    coverage must be enforceable in code, not merely encouraged in a prompt.
+    A model that notices the lesson is off-topic but still answers "pass"
+    (which happened: a Grade 1 quantum entanglement request came back as an
+    approved lesson about solids and liquids) is overruled by
+    `topic_drift_forces_fail` below.
+
+    This is internal. It is projected to the spec's exact {status, feedback}
+    shape by `to_output()` before it ever reaches the API or the UI.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["pass", "fail"]
+    feedback: list[str] = Field(default_factory=list)
+    addresses_requested_topic: bool = True
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def status_is_binary(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"pass", "fail"}:
+            raise ValueError("status must be exactly 'pass' or 'fail'")
+        return v
+
+    @model_validator(mode="after")
+    def topic_drift_forces_fail(self):
+        """Off-topic content can never pass, whatever the model said."""
+        if not self.addresses_requested_topic:
+            self.status = "fail"
+            if TOPIC_DRIFT_FEEDBACK not in self.feedback:
+                self.feedback = [TOPIC_DRIFT_FEEDBACK, *self.feedback]
+        return self
+
+    @model_validator(mode="after")
+    def fail_must_explain(self):
+        # A "fail" with no feedback is useless — the refinement pass needs something to act on.
+        if self.status == "fail" and not [f for f in self.feedback if f.strip()]:
+            raise ValueError("a 'fail' verdict must include at least one feedback item")
+        return self
+
+    def to_output(self) -> "ReviewerOutput":
+        return ReviewerOutput(status=self.status, feedback=self.feedback)
+
+
 class ReviewerOutput(BaseModel):
     """Spec output: {"status": "pass"|"fail", "feedback": [...]}
 
     Binary pass/fail is deliberate — it matches the spec and is harder for a
-    judge model to game than a numeric score.
+    judge model to game than a numeric score. This is the public shape; the
+    Reviewer's richer internal judgement lives in ReviewerJudgement.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -86,7 +141,6 @@ class ReviewerOutput(BaseModel):
 
     @model_validator(mode="after")
     def fail_must_explain(self):
-        # A "fail" with no feedback is useless — the refinement pass needs something to act on.
         if self.status == "fail" and not [f for f in self.feedback if f.strip()]:
             raise ValueError("a 'fail' verdict must include at least one feedback item")
         return self

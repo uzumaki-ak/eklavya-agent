@@ -102,6 +102,7 @@ async def _review(state: AgentState, content: dict | None, field: str) -> dict:
         review = await _reviewer.run(
             content=GeneratorOutput.model_validate(content),
             grade=state["grade"],
+            topic=state["topic"],
             deadline=state["deadline"],
             counters=counters,
         )
