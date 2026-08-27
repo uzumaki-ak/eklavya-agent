@@ -57,6 +57,19 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @field_validator("database_url", "redis_url", mode="before")
+    @classmethod
+    def clean_url(cls, value: str) -> str:
+        """Strip whitespace and stray quotes.
+
+        Values pasted into a hosting dashboard routinely pick up a trailing
+        newline or wrapping quotes, which produce a confusing parse failure far
+        from the cause.
+        """
+        if not isinstance(value, str):
+            return value
+        return value.strip().strip('"').strip("'")
+
     @field_validator("database_url")
     @classmethod
     def force_async_driver(cls, value: str) -> str:
@@ -68,6 +81,12 @@ class Settings(BaseSettings):
         for prefix in ("postgresql://", "postgres://"):
             if value.startswith(prefix):
                 return "postgresql+asyncpg://" + value[len(prefix):]
+        if not value.startswith("postgresql+asyncpg://"):
+            # Fail loudly here rather than as an opaque SQLAlchemy parse error.
+            raise ValueError(
+                f"DATABASE_URL must start with postgresql:// or postgres://; "
+                f"got {value[:20]!r}... (length {len(value)})"
+            )
         return value
 
 
