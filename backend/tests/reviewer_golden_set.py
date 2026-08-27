@@ -14,21 +14,9 @@ at which categories it gets wrong.
 Each case: what the Reviewer is shown, and what it should say.
 """
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class GoldenCase:
-    name: str
-    grade: int
-    topic: str
-    content: dict
-    expected_status: str  # "pass" | "fail"
-    expected_on_topic: bool
-    why: str  # what a human grader is keying on
-
-
-# Cases live in their own module purely to keep both files readable.
-from tests.reviewer_golden_cases import GOLDEN_SET  # noqa: E402
+# The type and cases share one dependency-free module. Keeping a dataclass here
+# and importing the cases back created a circular import that worked only when
+# this module happened to be imported first.
+from tests.reviewer_golden_cases import GOLDEN_SET, GoldenCase
 
 __all__ = ["GoldenCase", "GOLDEN_SET"]

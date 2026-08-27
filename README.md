@@ -94,6 +94,27 @@ Covers the schema contract (including the cross-field rules the API cannot
 enforce), cache-key canonicalization, and graph routing — notably that the
 one-refinement cap holds even when the second review also fails.
 
+### Reviewer evaluation baseline
+
+Run on **2026-08-28** with **Gemini `gemini-3.5-flash-lite`**:
+
+This result applies only to that model. The repository and `.env.example` default
+to `gemini-3.7-flash`, which has not been measured by this baseline.
+
+| Metric | Result |
+|---|---:|
+| Scored cases | 12/12 |
+| Defect recall | 8/8 (100%) |
+| Good-lesson recall | 4/4 (100%) |
+| Balanced accuracy | 100% |
+| Topic-drift flag | 11/12 (92%) |
+
+All cases pass the Generator schema and reach the Reviewer. One on-topic lesson
+with an untaught quiz question was incorrectly marked off-topic, although its
+overall `fail` verdict was correct. This is a small, hand-labelled baseline, not
+a production quality claim; rerun
+`python -m tests.run_reviewer_eval` after changing the model or Reviewer prompt.
+
 ### Load test
 
 ```bash

@@ -34,27 +34,30 @@ Repository: `https://github.com/uzumaki-ak/eklavya-agent`
 (or the local checkout, if you have it)
 
 Live deployment: `https://sincere-perfection-production-95aa.up.railway.app`
-Try **Grade 4 / "Types of angles"** and **Grade 1 / "quantum entanglement"**.
 
 Start with `README.md` and `ARCHITECTURE.md` for orientation, then read the actual source.
+
+**Note on the deployment:** the live site may be running an older build than the repository — a round of fixes exists in the working tree and may not yet be deployed. Judge the *code* on what is in the repo. Judge *output quality* by actually generating lessons on the live site, but do not attribute a defect to the code without confirming it in the source.
 
 ---
 
 ## How to evaluate
 
-**Verify, don't trust.** `ARCHITECTURE.md` and `README.md` make a lot of claims about what the system does and why. Check those claims against the code. Where a document asserts a behaviour, confirm the code actually implements it. Flag anything the docs oversell, describe aspirationally, or quietly contradict.
+**Verify, don't trust.** `ARCHITECTURE.md` and `README.md` make many claims. Check them against the code. Where a document asserts a behaviour, confirm the code implements it. Flag anything the docs oversell, describe aspirationally, or contradict. A previous reviewer found the Testing section listing tests that did not exist; check whether that class of problem persists anywhere.
 
 Cover at minimum:
 
 1. **Does it meet the literal brief?** Both agents present with clear responsibilities and genuinely structured I/O. One refinement pass, actually capped. UI showing all three stages distinctly.
 
-2. **Is the agent design sound?** Is the Reviewer a real quality gate, or does it rubber-stamp? Is the Generator's output actually grade-appropriate? Try the live app and judge the output quality yourself — a plausible-looking pipeline that produces mediocre content is a failure of the thing being asked for.
+2. **Is the agent design sound?** Is the Reviewer a real quality gate or a rubber stamp? Try to make it approve something it shouldn't. Generate several lessons on the live site and judge the content yourself — a plausible-looking pipeline producing mediocre lessons fails the thing being asked for. Specifically try: a topic far too advanced for the grade (e.g. Grade 1 / "quantum entanglement"), and check whether the refinement stays on the requested topic or silently substitutes a different one.
 
-3. **Scope judgement — weight this heavily.** The brief explicitly said no agent framework was needed. This submission includes a job queue, worker process, database leasing with fencing tokens, single-flight coordination, caching, rate limiting, retries, moderation, and a provider abstraction. Is that justified engineering, or scope creep that adds risk and reviewer burden for no credit? Would you rather have received a tighter submission? Say so plainly if yes.
+3. **Scope judgement — weight this heavily.** The brief explicitly said no agent framework was needed. This submission ships a job queue, worker process, database leasing with fencing tokens, single-flight coordination, caching, rate limiting, moderation, and a provider abstraction. The author has considered this and kept it deliberately. Judge it anyway: is it justified engineering, or scope creep that adds risk and reviewer burden for no credit? Would a tighter submission have been better? Say so plainly if yes.
 
-4. **Code quality.** Structure, naming, modularity, comments, error handling, tests. Are the tests meaningful or decorative? Is any of it over-abstracted?
+4. **Code quality.** Structure, naming, modularity, comments, error handling. Are the tests meaningful or decorative? Is anything over-abstracted? Do the comments explain *why* or merely restate the code?
 
-5. **What's missing or weak.** Gaps between what's claimed and what's built. Anything that would embarrass the author if a reviewer poked at it.
+5. **Safety, given the stated audience is children.** Content moderation exists. Assess it honestly, including whether the documentation's characterisation of its own limitations is accurate.
+
+6. **What's missing or weak.** Gaps between what's claimed and what's built. Anything that would embarrass the author under questioning.
 
 ---
 
@@ -63,8 +66,8 @@ Cover at minimum:
 - **Score out of 10**, with the single biggest reason for that score stated first.
 - **Scored breakdown** across: brief compliance, agent quality, engineering quality, scope judgement, UI.
 - **The three strongest things** about it.
-- **The three weakest things** about it, stated bluntly.
+- **The three weakest things**, stated bluntly.
 - **What you would change** to raise the score by one point.
 - A one-line verdict on whether you'd advance this candidate.
 
-Do not inflate the score. A 10 should mean you genuinely could not improve it.
+Do not inflate the score. A 10 should mean you genuinely could not improve it. If your score is the same as or lower than a hypothetical earlier version, say so — improvement is not to be assumed.

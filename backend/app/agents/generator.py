@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from app.agents.client import GENERATOR_CONFIG, call_llm
 from app.agents.prompts import (
+    escape_topic,
     GENERATOR_REFINE_USER,
     GENERATOR_SYSTEM,
     GENERATOR_USER,
@@ -46,11 +47,11 @@ class GeneratorAgent:
         if ctx.feedback:
             user = GENERATOR_REFINE_USER.format(
                 grade=data.grade,
-                topic=data.topic,
+                topic=escape_topic(data.topic),
                 feedback="\n".join(f"- {item}" for item in ctx.feedback),
             )
         else:
-            user = GENERATOR_USER.format(grade=data.grade, topic=data.topic)
+            user = GENERATOR_USER.format(grade=data.grade, topic=escape_topic(data.topic))
 
         return await self._generate_with_repair(system, user, ctx)
 

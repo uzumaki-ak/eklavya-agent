@@ -116,6 +116,8 @@ async def _review(state: AgentState, content: dict | None, field: str) -> dict:
 
     return {
         field: review.model_dump(),
+        "schema_repair_attempts": state["schema_repair_attempts"]
+        + counters.get("schema_repair_attempts", 0),
         "transport_attempts_total": state["transport_attempts_total"]
         + counters.get("transport_attempts", 0),
         "logical_llm_calls": state["logical_llm_calls"] + 1,

@@ -1,7 +1,7 @@
 """SAQ queue setup.
 
 SAQ's defaults would break this workload: a 10s job timeout and no heartbeat,
-against a pipeline whose budget is 240s. Both are set explicitly below.
+against a pipeline whose budget is 120s. Both are set explicitly below.
 """
 
 import logging

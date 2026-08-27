@@ -73,12 +73,16 @@ TOPIC_DRIFT_FEEDBACK = (
 class ReviewerJudgement(BaseModel):
     """What the Reviewer model actually returns.
 
-    `addresses_requested_topic` exists because the Reviewer's judgement on
-    coverage must be enforceable in code, not merely encouraged in a prompt.
-    A model that notices the lesson is off-topic but still answers "pass"
-    (which happened: a Grade 1 quantum entanglement request came back as an
-    approved lesson about solids and liquids) is overruled by
-    `topic_drift_forces_fail` below.
+    `addresses_requested_topic` makes the Reviewer's coverage judgement
+    enforceable in code rather than merely encouraged in a prompt. A model that
+    notices the lesson is off-topic but still answers "pass" (which happened: a
+    Grade 1 quantum entanglement request came back as an approved lesson about
+    solids and liquids) is overruled by `topic_drift_forces_fail` below.
+
+    What this does NOT do: it cannot independently detect drift. It enforces
+    what this same model self-reports, so a Reviewer that wrongly believes the
+    lesson is on topic still passes it. The guarantee is "a model that spots
+    drift cannot then approve it", not "drift is impossible".
 
     This is internal. It is projected to the spec's exact {status, feedback}
     shape by `to_output()` before it ever reaches the API or the UI.
@@ -87,8 +91,15 @@ class ReviewerJudgement(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["pass", "fail"]
-    feedback: list[str] = Field(default_factory=list)
-    addresses_requested_topic: bool = True
+    # Required in the provider schema. When it was optional, Gemini frequently
+    # returned {status: "fail"} without feedback and exhausted the repair loop.
+    feedback: list[str]
+    # Required, with no default: a default of True fails OPEN. If the model
+    # omitted the field the lesson would be treated as on-topic and could be
+    # approved — exactly the failure this field exists to prevent. Required means
+    # an omission raises ValidationError and the Reviewer fails closed instead of
+    # silently approving content whose topic coverage was not judged.
+    addresses_requested_topic: bool
 
     @field_validator("status", mode="before")
     @classmethod

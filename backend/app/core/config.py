@@ -40,13 +40,13 @@ class Settings(BaseSettings):
     flight_lease_renew_seconds: float = 15.0
 
     # --- Cache identity versions; bump any of these to invalidate cached content ---
-    # v2: ReviewerJudgement adds addresses_requested_topic.
-    schema_version: str = "v2"
+    # v4: Reviewer feedback is required in the provider's structured schema.
+    schema_version: str = "v4"
     canonicalizer_version: str = "v1"
-    # v2: filter rewritten to match harmful intent rather than bare nouns.
+    # v3: direct action/object grammar replaces the brittle proximity matcher.
     # Bumping this invalidates cached content approved under the old rules —
     # without it, lessons cleared by the broken filter would keep being served.
-    moderation_policy_version: str = "v2"
+    moderation_policy_version: str = "v3"
 
     @model_validator(mode="after")
     def model_ids_match_provider(self):

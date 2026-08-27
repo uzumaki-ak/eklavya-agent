@@ -4,7 +4,17 @@ Versions are part of the cache identity — bump one and cached content built
 with the old prompt stops being served.
 """
 
-PROMPT_VERSIONS = {"generator": "v4", "reviewer": "v4"}
+PROMPT_VERSIONS = {"generator": "v5", "reviewer": "v5"}
+
+
+def escape_topic(topic: str) -> str:
+    """Neutralise the delimiter inside untrusted input.
+
+    The topic is user-supplied and goes inside <topic> tags. A topic containing
+    "</topic>" would otherwise close the tag early and let whatever follows read
+    as prompt text rather than as the subject to teach.
+    """
+    return topic.replace("<", "‹").replace(">", "›")
 
 # Rough vocabulary/sentence guidance per grade band. Kept explicit rather than
 # left to the model's judgement, since "age appropriate" is the thing being graded.

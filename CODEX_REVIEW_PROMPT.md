@@ -1,64 +1,88 @@
-## Context — a second opinion on a fix plan, before any code is written
+## Context — verifying the fixes you advised on
 
-You have reviewed this codebase across several rounds already. It is now deployed and working. An independent evaluator then rated it against the original assignment and found real defects. I have a proposed fix plan. **I want your opinion on the plan before I implement it — do not write code, do not edit files.**
+You reviewed commit `0ecbbbb`, found follow-up defects, and those fixes are now in
+the working tree but deliberately uncommitted. **Verify the diff — do not take
+this summary at face value, do not commit or push, and do not re-argue scope.**
 
-Read `ARCHITECTURE.md` and the relevant source, then push back where you disagree.
+Same evidence bar as previous rounds: cite file and line, check claims against
+code rather than documentation, and say explicitly when you cannot confirm
+something.
 
-### One thing that is NOT up for discussion
+### Your four plan changes — all adopted
 
-The evaluator's largest criticism was scope: the brief said *"you do not need a full agent framework — simple Python classes or functions are sufficient"*, and this submission ships a queue, worker, DB leasing with fencing, single-flight election, caching, rate limiting and a provider abstraction. **The author has considered that and is deliberately keeping it.** Do not spend your review re-arguing it or recommending deletion. Assume the architecture stays as-is and evaluate the fixes within it.
+1. **Failing tests first, docs last.** The moderation failure was reproduced
+   before the fix (3 curriculum topics wrongly blocked, 6 harmful requests wrongly
+   allowed — 9 failures), then fixed to 0. Docs were corrected only after all
+   behaviour was final.
+2. **No keyword matching for topic fidelity.** Implemented exactly as you
+   specified: `ReviewerJudgement` carries `addresses_requested_topic: bool`, a
+   Pydantic `model_validator` forces `status="fail"` when it is false, and
+   `to_output()` projects to the spec's `{status, feedback}` shape. No third LLM
+   call.
+3. **Off-topic is a content failure.** It resolves to `completed_fail` through the
+   normal review path, not `generator_error`.
+4. **Measure, do not tune.** The evaluation set holds 12 hand-labelled cases
+   (8 fail, 4 pass), including both live misses. It reports a confusion matrix,
+   both class recalls, balanced accuracy, and topic-flag accuracy. Schema-rejected
+   cases are skipped rather than credited to the Reviewer. No live eval has run.
+
+### Your six additional findings — all addressed
+
+- **`refinement_count` reuse** — `STAGE_FIELDS` now drives Redis, direct cache,
+  persistence, and `single_flight.copy_result`; the actual follower function has
+  a regression test.
+- **Cache identity** — `moderation_policy_version=v3`, `schema_version=v4`, and
+  both prompt versions are `v5`; canonicalizer remains `v1`.
+- **`ReviewCard` promising a rewrite that never comes** — copy is now
+  first/final aware; a failed final says "not approved", not "gets rewritten".
+- **Failed final rewrite still had a playable quiz** — `App.jsx` now passes
+  `superseded={job.final_review?.status === "fail"}`, and `ContentCard`'s
+  rejected-note and expand-label are per-variant.
+- **Topic as untrusted input** — delimiter characters are neutralised by
+  `escape_topic()` before both Generator and Reviewer prompt interpolation.
+- **Title only after fidelity is enforced** — the refined card now gets
+  `title={job.topic}`, added in the same change as the fidelity enforcement.
+
+### Also changed
+
+- `moderation.py` uses direct action/object grammar, passive/instruction patterns,
+  and a self-harm-only help override. It remains explicitly demo-grade regex.
+- `ARCHITECTURE.md`: constants corrected to match `config.py` (120/150/2), the
+  never-implemented per-IP rate-limiting claim replaced with an explicit statement
+  that no HTTP throttling exists, the graph diagram corrected (moderation is
+  inlined in the generate/refine nodes, not separate graph nodes), and the Testing
+  section rewritten to list only tests that run.
+- Test count is 125, all passing. Frontend builds; no source file exceeds 200 lines.
 
 ---
 
-## The defects found
+## What I want you to check
 
-**1. Moderation is inverted, not merely weak.** `app/services/moderation.py` uses a regex pre-filter. Verified live:
+1. **Does `addresses_requested_topic` fail closed?** It is required in the JSON
+   schema. Confirm omission raises validation, validator ordering remains sound,
+   and `to_output()` cannot leak the internal field. Do not overclaim independent
+   drift detection: the validator enforces the model's self-report only.
 
-| Topic | Result |
-|---|---|
-| "sexual reproduction in plants" | **blocked** |
-| "why drugs are harmful to the body" | **blocked** |
-| "sexism in the workplace" | **blocked** |
-| "how to make a bomb at home" | allowed |
-| "ways to hurt yourself" | allowed |
+2. **Is the moderation rewrite genuinely better, or differently broken?** Try to
+   find both a legitimate school topic it still blocks and a harmful request it
+   still allows. I expect obfuscated requests get through — I want to know if
+   anything *plainly phrased* does.
 
-`\b(bomb|explosive|firearm|weapon)\s*(making|building|how to)` requires the verb *after* the noun, so it matches almost no natural phrasing. `ARCHITECTURE.md` discloses this as "demo-grade", which covers weak but arguably not inverted. Audience is school-age children.
+3. **The `STAGE_FIELDS` change touches every envelope consumer.** Confirm nothing
+   else breaks: `cache.py` get/set, `persist_reused`, `persist_result`, the direct
+   API cache path in `generate.py`, and `write_stage`'s column mapping.
 
-**2. The Reviewer is never told the topic.** Confirmed: `REVIEWER_USER` in `app/agents/prompts.py` interpolates only `{grade}` and `{content}`; the string `topic` does not appear in `app/agents/reviewer.py`. Consequences:
-- Reviewer criterion 4 ("Coverage — does the explanation teach the essential idea requested by the topic?") is structurally unevaluable.
-- Nothing anywhere asserts that `refined_output` is still about the requested topic.
-- The Reviewer's prompt does not stop it from rejecting the *request* rather than critiquing the *draft*. Live example: Grade 1 / "quantum entanglement" → Reviewer says *"Please replace the topic with age-appropriate 1st-grade science content"* → Generator writes a lesson on solids/liquids/gases → second review returns `pass` → UI shows "Checked and approved", page still headed "quantum entanglement". A child asked one question and got a confident green-ticked answer to a different one.
+4. **Does the 12-case golden set discriminate?** Confirm always-pass and
+   always-fail both score 50% balanced accuracy, schema-invalid cases are skipped,
+   topic flags are scored, and the modules import without order dependence.
 
-Note the author already solved this exact class of problem for *grade* (injected as prompt context, documented in ARCHITECTURE.md because the spec's Reviewer input is content-only) and missed the identical gap for topic.
+5. **Prompt-version bumps** — are all the versions that needed bumping actually
+   bumped, and is `canonicalizer_version` correctly left alone?
 
-**3. `refinement_count` is always 0 on cache hits.** It is not in `STAGE_FIELDS`, so `persist_reused` never writes it — cache hits and single-flight followers report 0 even with `refined_output` and `final_review` present. The README promises complete envelopes on cache hits.
+6. **Anything the fixes broke.** Especially the frontend: `ContentCard` now takes
+   per-variant copy and the final card can be `superseded`; check the collapse
+   behaviour and the `useEffect` interaction still make sense for both variants.
 
-**4. `ARCHITECTURE.md` claims things that are not true.** Its Testing section, under a heading saying IMPLEMENTED, lists fencing, lease-cancellation, single-flight, idempotency, golden-set and moderation tests. None exist. It also carries stale constants (240s/300s/4 attempts vs the shipped 120/150/2), draws `moderate_output` as graph nodes when it is inlined in `generate_original_node`/`refine_node`, and claims per-IP rate limiting that does not exist.
+7. **Anything still wrong that none of us has caught.**
 
-**5. Reviewer calibration.** It passes questions answerable by pure elimination ("A warm cozy blanket" as a black-hole distractor) despite its own criterion 6 telling it to fail exactly that. Distinct from #2: here it has the information and does not apply it.
-
----
-
-## The proposed plan
-
-1. **Rewrite the moderation filter** so it stops blocking legitimate curriculum topics and starts catching the phrasings it currently misses. Keep it local/regex (no new external dependency), but built from higher-precision patterns with intent context rather than bare nouns.
-2. **Pass the topic to the Reviewer**, so criterion 4 can actually fire.
-3. **Constrain the Reviewer to critiquing the draft**, never to rejecting or substituting the requested topic. If a topic genuinely cannot be taught at that grade, that should surface honestly to the user rather than becoming a silent swap.
-4. **Add a topic-fidelity check** so a refinement cannot change the subject — a run that drifts should fail visibly rather than complete with a green tick.
-5. **Fix `refinement_count`** on the reused-envelope path, and give the refined card a title so the page does not read as though the refined lesson answers the original heading.
-6. **Write the missing tests**, prioritising moderation and the Reviewer — the two components with zero coverage and the two the assignment is actually about.
-7. **Correct `ARCHITECTURE.md`** so every claim matches the code: fix the constants, the diagram, remove the rate-limiting claim, and make the Testing section describe only tests that exist.
-8. **Deliberately deferred:** deep Reviewer calibration for distractor quality (#5). The reasoning is that tuning it without a hand-labelled golden set risks swinging into over-rejection, which is a worse failure than the current leniency, and #2 already removes the largest miss.
-
----
-
-## What I want from you
-
-1. **Is the plan right?** Anything mis-prioritised, anything that will not actually fix the defect it targets.
-2. **Item 1 specifically** — is a hardened regex defensible for a child-facing product, or is the honest answer that only a hosted classifier will do and anything else is theatre? Say so if so.
-3. **Item 4 specifically** — how would you implement a topic-fidelity check without it becoming a third LLM call or a brittle keyword match? Is failing the run the right outcome, or is there a better one?
-4. **Item 8** — do you agree calibration should be deferred, or is shipping a Reviewer that demonstrably ignores its own criterion 6 worse than the over-rejection risk?
-5. **Anything the evaluator and I both missed.** You know this codebase; the evaluator saw it fresh. Assume there are defects neither of us named.
-6. Flag any fix that would **break something currently working**.
-
-Same evidence bar as previous rounds: cite file and line, verify claims against code rather than documentation, and say explicitly when you cannot confirm something. Opinion and reasoning only — no edits.
+Opinion and verification only — no edits.

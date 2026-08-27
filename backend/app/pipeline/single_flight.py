@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.exceptions import FlightLeadershipLost
 from app.db import flights, runs
 from app.db.session import SessionLocal
+from app.services.envelope import STAGE_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +99,9 @@ async def copy_result(source_run_id: uuid.UUID) -> dict | None:
             source = await runs.get_run(session, source_run_id)
         if source is None or source.status not in {"completed_pass", "completed_fail"}:
             return None
-        return {
-            "status": source.status,
-            "original_output": source.original_output,
-            "initial_review": source.initial_review,
-            "refined_output": source.refined_output,
-            "final_review": source.final_review,
-        }
+        # Built from STAGE_FIELDS rather than listed by hand — the hand-written
+        # list silently dropped refinement_count, so a follower showed refined
+        # content while reporting zero refinements.
+        envelope = {field: getattr(source, field) for field in STAGE_FIELDS}
+        return {"status": source.status, **envelope}
     return None

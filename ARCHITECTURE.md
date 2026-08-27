@@ -200,7 +200,7 @@ async def run_pipeline(run_id, grade, topic) -> None:
             await persist_terminal_state_and_release_lease(run_id)
 ```
 
-**Request ceiling**: one `call_llm` invocation has at most 4 Tenacity attempts,
+**Request ceiling**: one `call_llm` invocation has at most 2 Tenacity attempts,
 but the 120-second outer pipeline deadline is the controlling wall-clock bound.
 Gemini 3.7 runs at `thinking_level="low"` for this simple educational workload;
 Google documents that level for minimizing latency and cost. A 40-second call
@@ -378,7 +378,7 @@ who self-harms" reads as educational rather than as a request for method.
 > **Still demo-grade, and this matters.** It is a high-precision local pre-filter,
 > not production child safety: it cannot reason about context, and an obfuscated
 > request will get through. **Replace it with a hosted classifier before real
-> children use this.** Bumping `moderation_policy_version` (now `v2`) invalidates
+> children use this.** Bumping `moderation_policy_version` (now `v3`) invalidates
 > content cached under the old rules — without that, lessons the broken filter
 > cleared would keep being served.
 
@@ -393,20 +393,24 @@ unevaluable — and produced a live failure: Grade 1 / "quantum entanglement" ca
 back as an *approved* lesson about solids and liquids. Three changes:
 
 1. `REVIEWER_USER` now interpolates the topic, so criterion 4 can actually fire.
-2. The model answers into `ReviewerJudgement`, which carries an internal
+2. The model answers into `ReviewerJudgement`, which carries a required internal
    `addresses_requested_topic: bool`. A `False` there **forces** `status="fail"`
-   in a Pydantic validator — the model cannot approve off-topic content whatever
-   verdict it returns. The field is dropped by `to_output()` before the response
-   reaches the API, so the spec's public `{status, feedback}` shape is unchanged.
+   in a Pydantic validator. Missing/invalid fields enter the same bounded schema-
+   repair policy as Generator output and fail closed as a Reviewer error only if
+   repair is exhausted. This
+   enforces the model's self-report; it does not independently detect drift if the
+   model incorrectly reports `True`. The field is dropped by `to_output()` before
+   the response reaches the API, so the public shape remains `{status, feedback}`.
 3. The Reviewer is instructed never to ask for the topic to be replaced (it is
    reviewing a draft, not renegotiating the request), and the refinement prompt is
    told to ignore any such instruction if one arrives anyway. Two layers, because
    the prompt rule is advisory and the validator is not.
 
-**Measured, not tuned.** `tests/reviewer_golden_set.py` holds 10 hand-labelled cases
-including the two known live misses (elimination-only distractors, near-duplicate
-options). Deliberately no tuning yet: changing the prompt without a baseline swings
-into over-rejection, which is a worse failure than the leniency it fixes.
+**Measured, not tuned.** `tests/reviewer_golden_set.py` holds 12 hand-labelled cases
+(8 fail, 4 pass), including the two known live misses (elimination-only distractors,
+near-duplicate options). The evaluator reports both class recalls, a confusion
+matrix, balanced accuracy, and topic-flag accuracy; schema-rejected cases are
+skipped rather than credited to the Reviewer. Deliberately no tuning yet.
 
 The user-supplied topic is wrapped in `<topic>` tags with both prompts stating that
 its contents are the subject to teach, never instructions — it is untrusted input
@@ -509,7 +513,7 @@ volumes:
 
 ## Testing
 
-`cd backend && pytest` — 77 tests. This section lists only tests that exist; an
+`cd backend && pytest` — 125 tests. This section lists only tests that exist; an
 earlier revision described an intended suite as though it were implemented, which
 is exactly the kind of claim a reviewer checks.
 
@@ -519,21 +523,21 @@ is exactly the kind of claim a reviewer checks.
 |---|---|
 | `test_schemas.py` (12) | The spec's I/O contract: four distinct options, answer among them, no blanks, `extra="forbid"`, binary reviewer status, fail-requires-feedback |
 | `test_pipeline_routing.py` (10) | Graph routing, and that the one-refinement cap holds even when the second review also fails |
-| `test_topic_fidelity.py` (9) | The Reviewer receives the topic; an off-topic judgement is forced to fail in code; the internal field never leaks into the public schema |
+| `test_topic_fidelity.py` (14) | Required topic judgement, forced off-topic failure, delimiter escaping, single-flight envelope reuse, evaluator baselines |
+| `test_reviewer_repair.py` (4) | Reviewer schema repair success, bounded exhaustion, required fields, all eval cases schema-valid |
 | `test_provider_refactor.py` (8) | Provider abstraction, retry predicates, config/cache-key coherence |
-| `test_moderation.py` (4, parametrised over 18 topics) | Curriculum topics pass; harm-instruction requests are blocked; the output gate runs the same rules |
+| `test_moderation.py` (4, parametrised over 57 topics) | Curriculum topics pass; plainly phrased harm requests are blocked; the output gate runs the same rules |
 | `test_runner_resilience.py` (4) | Deadline termination, flight-leadership loss, rollback-then-terminalize |
 | `test_canonicalize.py` (4) | Cache-key normalisation and its alias map |
 | `test_rate_limit.py` (3) | Sliding-window RPM limiter |
 
-**Reviewer evaluation set** — `tests/reviewer_golden_set.py` holds 10 hand-labelled
-cases (good on-topic, coherent-but-off-topic, factually wrong, too advanced,
-question-not-taught, elimination-only distractors, near-duplicate options, hard
-topic simplified well, impossible answer, partially off-topic). Run
+**Reviewer evaluation set** — `tests/reviewer_golden_set.py` holds 12 hand-labelled
+cases (8 fail, 4 pass), including good on-topic, coherent-but-off-topic, factual,
+age-level, question-quality, distractor-quality, and topic-coverage examples. Run
 `python -m tests.run_reviewer_eval` — it needs an API key and spends quota, so it
-is a script rather than part of `pytest`. Read *recall on cases that should fail*,
-not raw agreement: the classes are imbalanced, so a Reviewer that passed
-everything would still score respectably on agreement while being useless.
+is a script rather than part of `pytest`. Read balanced accuracy and both class
+recalls, not raw agreement; an always-pass or always-fail Reviewer scores only 50%
+balanced accuracy.
 
 **What is deliberately NOT covered, and why**
 
@@ -587,4 +591,4 @@ Compose: rolling spec, no version: key — document minimum supported Compose CL
 
 **Round 4**: 5 further issues, all applied in rev 5. One (`max_retries=0` missing) was a self-inflicted regression from the rev 4 rewrite, not a new finding. The other four were real gaps: `content_flights`'s `RETURNING` clause doesn't behave the way a follower needed (Postgres returns zero rows, not the existing row, when the `WHERE` blocks the conflict update — fixed with a fallback `SELECT`, a `'failed'` terminal state, shorter renewable leases, fenced completion, jittered bounded follower polling, and a durable `result_run_id`); the 240s deadline was a soft per-attempt check, not an actual hard boundary — fixed with one outer `asyncio.timeout_at` wrapping the whole pipeline and a distinction between per-call and pipeline-level timeouts; lease renewal was prose with no wiring — fixed with a background renewal task and a `lease_epoch` that only changes on takeover, not every write; and a Vite runtime-env-var approach that does nothing in a production build — fixed with a same-origin reverse-proxy frontend instead of an injected absolute URL.
 
-**Round 5** (final — architecture confirmed ready for implementation): 2 surgical fixes applied in rev 6. Clamping `_clamped_wait` to 0 only stopped Tenacity from *sleeping*, not from *retrying* — a separate deadline-aware `stop` condition was needed (`stop_after_attempt(4) | _deadline_stop(deadline)`), plus a pre-attempt check so no HTTP request starts after the budget is gone, plus fixing the Retry-After read (`exc.response.headers`, not a nonexistent `exc.retry_after` attribute). And the `content_flights` election query allowed takeover of a `'done'` flight, meaning a request arriving just after the leader finished would recompute from scratch instead of reusing `result_run_id` — fixed by making `'done'` never a takeover condition (only `'failed'` or an actually-expired `'in_progress'` lease), tightening the flight-lease renewal cadence to ~15s against its 45s lease, and combining the leader's `generation_runs` completion write with the `content_flights` → `done` transition into one transaction so `done` can never become visible before the result is durably persisted.
+**Round 5** (final — architecture confirmed ready for implementation): 2 surgical fixes applied in rev 6. Clamping `_clamped_wait` to 0 only stopped Tenacity from *sleeping*, not from *retrying* — a separate deadline-aware `stop` condition was needed (`stop_after_attempt(2) | _deadline_stop(deadline)`), plus a pre-attempt check so no HTTP request starts after the budget is gone, plus fixing the Retry-After read (`exc.response.headers`, not a nonexistent `exc.retry_after` attribute). And the `content_flights` election query allowed takeover of a `'done'` flight, meaning a request arriving just after the leader finished would recompute from scratch instead of reusing `result_run_id` — fixed by making `'done'` never a takeover condition (only `'failed'` or an actually-expired `'in_progress'` lease), tightening the flight-lease renewal cadence to ~15s against its 45s lease, and combining the leader's `generation_runs` completion write with the `content_flights` → `done` transition into one transaction so `done` can never become visible before the result is durably persisted.
