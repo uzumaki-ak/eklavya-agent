@@ -1,0 +1,113 @@
+/* Imported by index.css. See that file for the design-token contract. */
+
+/* --- Quiz --- */
+.mcq {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 16px;
+  position: relative;
+  min-width: 0;
+}
+.mcq-question {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.options {
+  display: grid;
+  gap: 8px;
+}
+.option {
+  text-align: left;
+  padding: 13px 16px;
+  border-radius: 14px;
+  border: 3px solid var(--purple-soft);
+  background: var(--surface);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+.option:hover:not(:disabled) {
+  border-color: var(--purple);
+}
+.option.correct {
+  background: var(--green-soft);
+  border-color: var(--green);
+}
+.option.wrong {
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+.option:disabled {
+  cursor: default;
+}
+
+.quiz-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+/* A tiny, dependency-free reward for a correct answer. */
+.confetti-burst {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: visible;
+}
+.confetti-piece {
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  width: 8px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--confetti-color);
+  opacity: 0;
+  animation: confetti-pop 850ms cubic-bezier(0.2, 0.7, 0.25, 1) var(--confetti-delay) both;
+}
+.confetti-piece:nth-child(3n) {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+@keyframes confetti-pop {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0deg) scale(0.4);
+  }
+  12% { opacity: 1; }
+  58% {
+    opacity: 1;
+    transform: translate(var(--confetti-x), var(--confetti-rise)) rotate(var(--confetti-spin)) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--confetti-x), var(--confetti-fall)) rotate(var(--confetti-spin)) scale(0.75);
+  }
+}
+
+@media (max-width: 980px) {
+  .quiz-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .quiz-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mcq {
+    margin-top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confetti-burst { display: none; }
+}
+

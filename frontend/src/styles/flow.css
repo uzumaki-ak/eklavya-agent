@@ -1,0 +1,85 @@
+/* Imported by index.css. See that file for the design-token contract. */
+
+/* --- Agent flow stepper --- */
+.flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 22px;
+}
+.step {
+  flex: 1;
+  text-align: center;
+  opacity: 0.4;
+  transition: opacity 0.3s ease;
+}
+.step.active,
+.step.done {
+  opacity: 1;
+}
+.step-bubble {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 1.6rem;
+  background: var(--purple-soft);
+  border: 3px solid var(--purple-soft);
+}
+.step.active .step-bubble {
+  border-color: var(--purple);
+  animation: bounce 1s ease-in-out infinite;
+}
+.step.done .step-bubble {
+  background: var(--green-soft);
+  border-color: var(--green);
+}
+.step-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.step-connector {
+  height: 4px;
+  flex: 0 0 20px;
+  margin-top: 25px;
+  border-radius: 2px;
+  background: var(--purple-soft);
+}
+.step-connector.filled {
+  background: var(--green);
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+/* --- Loading / facts --- */
+.loading {
+  text-align: center;
+  padding: 28px 20px;
+}
+.fact-box {
+  background: var(--amber-soft);
+  border: 3px solid var(--amber);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-top: 18px;
+}
+.fact-label {
+  font-family: var(--font-display);
+  font-weight: 800;
+  color: var(--amber);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.fact-text {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-top: 4px;
+}
+

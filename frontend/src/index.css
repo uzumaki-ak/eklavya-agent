@@ -1,0 +1,103 @@
+/* Kid-friendly design tokens: high contrast, rounded, warm.
+   Big tap targets and generous spacing — small fingers, small screens.
+
+   @import must come before any rule, per the CSS spec. Custom properties
+   resolve at computed-value time, so the tokens below still apply to the
+   imported sheets regardless of order. */
+
+@import "./styles/forms.css";
+@import "./styles/flow.css";
+@import "./styles/results.css";
+@import "./styles/quiz.css";
+@import "./styles/helpers.css";
+
+:root {
+  --bg: #fef8ee;
+  --surface: #ffffff;
+  --ink: #2d2438;
+  --ink-soft: #6b5f7a;
+
+  --purple: #7c5cff;
+  --purple-soft: #ede9ff;
+  --green: #2ec27e;
+  --green-soft: #e3f9ef;
+  --amber: #ff9f1c;
+  --amber-soft: #fff2dd;
+  --pink: #ff6b9d;
+  --blue: #38b6ff;
+  --red: #e5484d;
+  --red-soft: #ffeaea;
+
+  --radius: 20px;
+  --radius-lg: 28px;
+  --shadow: 0 4px 0 rgba(45, 36, 56, 0.1), 0 8px 24px rgba(45, 36, 56, 0.08);
+
+  --font-display: "Baloo 2", "Comic Sans MS", system-ui, sans-serif;
+  --font-body: "Nunito", system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.6;
+  /* Playful dotted backdrop */
+  background-image: radial-gradient(circle, rgba(124, 92, 255, 0.07) 1.5px, transparent 1.5px);
+  background-size: 28px 28px;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  line-height: 1.2;
+  margin: 0 0 0.4em;
+}
+
+.app {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px 18px 80px;
+}
+.app.has-job {
+  max-width: 1180px;
+}
+
+/* --- Header --- */
+.header {
+  text-align: center;
+  padding: 20px 0 28px;
+}
+.header h1 {
+  font-size: clamp(2rem, 6vw, 2.8rem);
+  color: var(--purple);
+}
+.header p {
+  color: var(--ink-soft);
+  margin: 0;
+  font-weight: 600;
+}
+
+.header-compact {
+  padding: 6px 0 14px;
+}
+.header-compact h1 {
+  font-size: 2rem;
+  margin-bottom: 0.15em;
+}
+
+@media (max-width: 720px) {
+  .app {
+    padding: 18px 14px 60px;
+  }
+
+  .header-compact {
+    padding-bottom: 18px;
+  }
+}

@@ -1,0 +1,112 @@
+/* Imported by index.css. See that file for the design-token contract. */
+
+/* --- Cards --- */
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow);
+  border: 3px solid transparent;
+  margin-bottom: 18px;
+}
+
+/* --- Form --- */
+.field {
+  margin-bottom: 18px;
+}
+.field label {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin-bottom: 8px;
+}
+
+.grade-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.grade-chip {
+  min-width: 52px;
+  min-height: 52px; /* comfortable tap target */
+  border-radius: 16px;
+  border: 3px solid var(--purple-soft);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+.grade-chip:hover {
+  transform: translateY(-2px);
+}
+.grade-chip[aria-pressed="true"] {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+.topic-input {
+  width: 100%;
+  padding: 16px 18px;
+  font-size: 1.1rem;
+  font-family: var(--font-body);
+  border-radius: var(--radius);
+  border: 3px solid var(--purple-soft);
+  background: var(--surface);
+  color: var(--ink);
+}
+.topic-input:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.suggestion {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 2px dashed var(--purple-soft);
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.suggestion:hover {
+  border-style: solid;
+  color: var(--purple);
+}
+
+.btn-go {
+  width: 100%;
+  padding: 18px;
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #fff;
+  background: var(--purple);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  box-shadow: 0 5px 0 #5b3fd6;
+  transition: transform 0.1s ease;
+}
+.btn-go:active {
+  transform: translateY(4px);
+  box-shadow: 0 1px 0 #5b3fd6;
+}
+.btn-go:disabled {
+  background: #c9c2d6;
+  box-shadow: 0 5px 0 #aca4bb;
+  cursor: not-allowed;
+}
+

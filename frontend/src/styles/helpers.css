@@ -1,0 +1,89 @@
+/* Imported by index.css. See that file for the design-token contract. */
+
+/* --- Icon + layout helpers --- */
+.btn-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.fact-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcq-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-weight: 700;
+}
+
+.quiz-heading {
+  margin: 18px 0 10px;
+}
+
+.review-summary {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.cache-note {
+  text-align: center;
+  font-weight: 700;
+  color: var(--ink-soft);
+  background: var(--green-soft);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin: 0 0 16px;
+}
+
+.error-code {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  margin: 14px 0 0;
+  font-family: ui-monospace, monospace;
+}
+
+.card.error h2 {
+  margin-top: 10px;
+}
+
+/* Mascot idles gently so the page feels alive while waiting. */
+.mascot {
+  display: block;
+  margin: 0 auto;
+}
+.mascot-writing,
+.mascot-checking,
+.mascot-polishing {
+  animation: float 2.6s ease-in-out infinite;
+}
+.mascot-sparkle {
+  animation: twinkle 1.8s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes twinkle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

@@ -1,0 +1,32 @@
+# Rendered by nginx's envsubst at container start, so the API upstream can differ
+# per environment: http://api:8000 under Compose, http://<service>.railway.internal:8000
+# on Railway. NGINX_ENVSUBST_FILTER restricts substitution to API_UPSTREAM only —
+# without it, envsubst would also eat nginx's own $uri / $host / $remote_addr.
+
+server {
+    listen 3000;
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # SPA: unknown paths fall back to index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Same-origin API proxy - this is why the bundle needs no API URL.
+    location /api/ {
+        proxy_pass ${API_UPSTREAM}/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # SSE needs buffering off, or stage updates arrive in one clump at the end.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 330s;
+    }
+
+    location /health {
+        proxy_pass ${API_UPSTREAM}/health;
+    }
+}
