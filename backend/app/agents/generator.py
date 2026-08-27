@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from app.agents.client import GENERATOR_CONFIG, call_llm
+from app.agents.option_order import balanced_options
 from app.agents.prompts import (
     escape_topic,
     GENERATOR_REFINE_USER,
@@ -38,6 +39,18 @@ class ExecutionContext:
     counters: dict = field(default_factory=dict)  # transport_attempts, written back
 
 
+def _spread_answer_positions(output: GeneratorOutput) -> GeneratorOutput:
+    """Reorder options so the answer is not predictably first.
+
+    Runs after validation, so the answer is already known to be one of the four
+    options; a permutation cannot break that. The Reviewer therefore judges the
+    same order the child sees.
+    """
+    for mcq in output.mcqs:
+        mcq.options = balanced_options(mcq.question, mcq.options)
+    return output
+
+
 class GeneratorAgent:
     """Input: GeneratorInput. Output: GeneratorOutput."""
 
@@ -53,7 +66,8 @@ class GeneratorAgent:
         else:
             user = GENERATOR_USER.format(grade=data.grade, topic=escape_topic(data.topic))
 
-        return await self._generate_with_repair(system, user, ctx)
+        output = await self._generate_with_repair(system, user, ctx)
+        return _spread_answer_positions(output)
 
     async def _generate_with_repair(
         self, system: str, user: str, ctx: ExecutionContext

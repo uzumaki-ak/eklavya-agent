@@ -41,7 +41,9 @@ class Settings(BaseSettings):
 
     # --- Cache identity versions; bump any of these to invalidate cached content ---
     # v4: Reviewer feedback is required in the provider's structured schema.
-    schema_version: str = "v4"
+    # v5: MCQ options are reordered in code — pre-v5 cached lessons still carry
+    # the model's answer-first bias, so they must not keep being served.
+    schema_version: str = "v5"
     canonicalizer_version: str = "v1"
     # v3: direct action/object grammar replaces the brittle proximity matcher.
     # Bumping this invalidates cached content approved under the old rules —
