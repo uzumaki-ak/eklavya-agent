@@ -7,6 +7,10 @@ handoff rather than just a final answer.
 - **Reviewer Agent** — judges that draft on age appropriateness, conceptual correctness, and clarity.
 - **One refinement pass** — if the Reviewer fails the draft, the Generator re-runs once with the feedback embedded. Capped at one pass, enforced structurally in the graph.
 
+**Live:** <https://sincere-perfection-production-95aa.up.railway.app> — try Grade 4
+"Types of angles" for a clean pass, or Grade 1 "quantum entanglement" to watch the
+Reviewer reject a draft and the refinement get judged in turn.
+
 Full design rationale and the review history behind it: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---

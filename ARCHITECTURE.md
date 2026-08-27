@@ -1,14 +1,18 @@
 # Eklavya AI Assessment — Architecture Plan
 
-**Revision 8 — IMPLEMENTED.** Updated 27 Aug 2026 after an independent evaluation
-against the assignment brief.
+**Revision 9 — IMPLEMENTED.** Updated 28 Aug 2026.
 
-Rev 8 fixes what that evaluation found: moderation failed in both directions, the
-Reviewer was never told the topic (so it approved a lesson on the wrong subject),
-`refinement_count` was lost on both reuse paths, a rejected rewrite still offered a
-playable quiz, and this document claimed constants and tests that did not exist.
-Constants below are checked against `app/core/config.py`; the Testing section lists
-only tests that run.
+Rev 8 fixed what an independent evaluation found: moderation failed in both
+directions, the Reviewer was never told the topic (so it approved a lesson on the
+wrong subject), `refinement_count` was lost on both reuse paths, a rejected rewrite
+still offered a playable quiz, and this document claimed constants and tests that
+did not exist.
+
+Rev 9 fixes two defects found by using the deployed app rather than by reading it:
+the Reviewer could fail open when it omitted its own topic-coverage flag, and the
+Generator put the correct answer first in six of nine sampled questions, making the
+quiz answerable without reading it. Constants below are checked against
+`app/core/config.py`; the Testing section lists only tests that run.
 
 ## Source requirement (from assessment PDF)
 
