@@ -4,7 +4,8 @@
 # without it, envsubst would also eat nginx's own $uri / $host / $remote_addr.
 
 server {
-    listen 3000;
+    # Railway assigns the port at runtime; Compose falls back to 3000.
+    listen ${PORT};
     server_name _;
     root /usr/share/nginx/html;
 

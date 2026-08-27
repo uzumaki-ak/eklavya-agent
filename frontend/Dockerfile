@@ -15,10 +15,11 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # Templates in this directory get envsubst applied at container start.
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
-# Substitute ONLY this variable, so nginx's own $uri/$host survive.
-ENV NGINX_ENVSUBST_FILTER=API_UPSTREAM
-# Compose default; Railway overrides with the private-network hostname.
+# Substitute ONLY these two, so nginx's own $uri/$host/$remote_addr survive.
+ENV NGINX_ENVSUBST_FILTER="^(API_UPSTREAM|PORT)$"
+# Compose defaults; Railway overrides both at runtime.
 ENV API_UPSTREAM=http://api:8000
+ENV PORT=3000
 
 # nginx:alpine ships an unprivileged `nginx` user; give it the dirs it needs
 # so the server can run without root. Port 3000 is >1024, so no privileged bind.
