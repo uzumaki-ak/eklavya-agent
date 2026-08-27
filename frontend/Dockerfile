@@ -12,12 +12,17 @@ RUN npm run build
 FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Templates in this directory get envsubst applied at container start.
+# Templates here get envsubst applied at container start.
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
-# Substitute ONLY these two, so nginx's own $uri/$host/$remote_addr survive.
-ENV NGINX_ENVSUBST_FILTER="^(API_UPSTREAM|PORT)$"
-# Compose defaults; Railway overrides both at runtime.
+# Exports NGINX_RESOLVER before templates are rendered, so nginx can re-resolve
+# upstreams at request time instead of caching them at startup.
+COPY docker-entrypoint.d/10-resolver.envsh /docker-entrypoint.d/10-resolver.envsh
+RUN chmod +x /docker-entrypoint.d/10-resolver.envsh
+
+# Substitute ONLY these, so nginx's own $uri/$host/$remote_addr survive.
+ENV NGINX_ENVSUBST_FILTER="^(API_UPSTREAM|PORT|NGINX_RESOLVER)$"
+# Compose defaults; the platform overrides these at runtime.
 ENV API_UPSTREAM=http://api:8000
 ENV PORT=3000
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Export the container's DNS server so nginx can resolve upstreams at request
+# time instead of once at startup.
+#
+# Without this, nginx resolves proxy_pass hostnames when the config loads and
+# caches the address forever. On a platform where the upstream's private IP
+# changes on every redeploy (Railway, Fly, ECS), the proxy silently starts
+# pointing at a dead address and every request times out until nginx restarts.
+#
+# nginx's entrypoint sources *.envsh before rendering templates, so anything
+# exported here is available to envsubst.
+
+set -e
+
+# First nameserver from resolv.conf. IPv6 addresses must be bracketed for nginx.
+NGINX_RESOLVER="$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)"
+
+case "$NGINX_RESOLVER" in
+    *:*) NGINX_RESOLVER="[$NGINX_RESOLVER]" ;;   # IPv6
+esac
+
+# Fall back to Docker's embedded DNS if resolv.conf had nothing usable.
+[ -n "$NGINX_RESOLVER" ] || NGINX_RESOLVER="127.0.0.11"
+
+export NGINX_RESOLVER
+echo "resolver: using $NGINX_RESOLVER"
