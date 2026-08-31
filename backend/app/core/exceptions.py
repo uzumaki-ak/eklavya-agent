@@ -31,3 +31,11 @@ class LeaseLost(Exception):
 
 class FlightLeadershipLost(Exception):
     """Another run took over this content flight; stop generating this duplicate."""
+
+
+class ContentContractError(ValueError):
+    """Generated content broke a rule that can only be checked against the request.
+
+    Handled exactly like a schema failure: the message is fed back to the model
+    inside the agent's bounded repair pass.
+    """

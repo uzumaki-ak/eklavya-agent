@@ -14,9 +14,17 @@ class Settings(BaseSettings):
     llm_provider: Literal["claude", "gemini"] = "gemini"
     anthropic_api_key: str = ""  # falls back to SDK's own env/profile resolution when blank
     gemini_api_key: str = ""
-    generator_model_id: str = "gemini-3.7-flash"
-    reviewer_model_id: str = "gemini-3.7-flash"
-    gemini_thinking_level: Literal["low", "medium", "high"] = "low"
+    # Keep fresh deployments aligned with the model used for the submitted
+    # baseline and live demo. Environment variables may still override each
+    # role independently.
+    generator_model_id: str = "gemini-3.5-flash-lite"
+    reviewer_model_id: str = "gemini-3.5-flash-lite"
+    tagger_model_id: str = "gemini-3.5-flash-lite"
+    # Measured, not guessed (README "Reviewer evaluation baseline"): medium
+    # takes the Reviewer from 88% to 100% defect recall, catching the
+    # elimination-only-distractor case that low let through live. "high"
+    # scores no better and truncates the Reviewer against its token budget.
+    gemini_thinking_level: Literal["low", "medium", "high"] = "medium"
 
     # --- Infrastructure ---
     database_url: str = "postgresql+asyncpg://eklavya:eklavya@postgres:5432/eklavya"
@@ -28,10 +36,21 @@ class Settings(BaseSettings):
     # Set 0 to disable; when non-zero, keep a single worker process.
     llm_requests_per_minute: int = 14
     llm_call_timeout_seconds: float = 40.0
-    pipeline_deadline_seconds: float = 120.0  # hard budget for one whole job
-    saq_job_timeout_seconds: int = 150  # queue-level safety net above the pipeline deadline
+    # Part 2's worst path is seven logical calls (generate, review, refine, review,
+    # refine, review, tag) against Part 1's four, so the 120s budget no longer
+    # fits the flow a reviewer will deliberately exercise. These three must stay
+    # strictly ordered — pipeline < queue < proxy — so each layer fails inward
+    # first and the outer one never truncates a run that was about to terminate
+    # cleanly. The proxy is nginx's proxy_read_timeout (330s), set in
+    # frontend/nginx.conf.template.
+    pipeline_deadline_seconds: float = 240.0  # hard budget for one whole job
+    saq_job_timeout_seconds: int = 270  # queue-level safety net above the pipeline deadline
     transport_max_attempts: int = 2  # fail visibly instead of retrying for minutes
-    schema_repair_max_attempts: int = 2  # extra tries when output fails Pydantic validation
+    # The spec is explicit: "If validation fails -> retry once, then fail
+    # gracefully." One extra try, so two total calls per agent. Configurable
+    # because the right number is a measured property, but the shipped default
+    # is the specified one.
+    schema_repair_max_attempts: int = 1
 
     # --- Leasing (see ARCHITECTURE.md "Idempotency & job leasing") ---
     job_lease_seconds: int = 120
@@ -44,18 +63,20 @@ class Settings(BaseSettings):
     # v5: MCQ options are reordered in code — pre-v5 cached lessons still carry
     # the model's answer-first bias, so they must not keep being served.
     # v6: position-dependent choices are rejected before option reordering.
-    schema_version: str = "v6"
+    # v7: the Part 2 contract — nested explanation, correct_index, teacher_notes,
+    # scored reviews, tags. Pre-v7 payloads are a different shape entirely, so
+    # serving one would fail validation rather than merely be stale.
+    schema_version: str = "v7"
     canonicalizer_version: str = "v1"
-    # v3: direct action/object grammar replaces the brittle proximity matcher.
-    # Bumping this invalidates cached content approved under the old rules —
-    # without it, lessons cleared by the broken filter would keep being served.
-    moderation_policy_version: str = "v3"
+    # v6 completes the closed target vocabulary and invalidates v5 cache rows
+    # whose singular/relative target may have escaped moderation.
+    moderation_policy_version: str = "v6"
 
     @model_validator(mode="after")
     def model_ids_match_provider(self):
         """Fail at startup instead of sending one vendor another vendor's ID."""
         expected_prefix = "gemini-" if self.llm_provider == "gemini" else "claude-"
-        for field_name in ("generator_model_id", "reviewer_model_id"):
+        for field_name in ("generator_model_id", "reviewer_model_id", "tagger_model_id"):
             model_id = getattr(self, field_name)
             if not model_id.startswith(expected_prefix):
                 raise ValueError(

@@ -1,15 +1,18 @@
-"""Agent I/O schemas — the exact contract from the assessment spec.
+"""Generator I/O schemas — the Part 2 strict contract.
 
-Shape is enforced by each provider's native structured output; the cross-field rules
-below (answer-in-options, uniqueness) are Python-level and raise ValidationError,
-which is why the generator needs a separate schema-repair loop.
+Shape is enforced by each provider's native structured output; the cross-field
+rules below (distinct options, position-independent options) are Python-level
+and raise ValidationError, which is why the Generator needs its own bounded
+schema-repair pass.
+
+One rule deliberately does NOT live here: `explanation.grade` must equal the
+*requested* grade, which this model has no way of knowing. That check belongs to
+the agent, which does know it — see `app.agents.contract.check_matches_request`.
 """
 
 import re
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
 
 _RELATIVE_OPTION_RE = re.compile(
     r"\b(?:all|none|both|either|neither)\s+of\s+(?:the\s+)?"
@@ -27,6 +30,8 @@ _OPTION_LABEL_EXPRESSION_RE = re.compile(
 )
 _OPTION_LABEL_PREFIX_RE = re.compile(r"^[A-D]\s*[.):\-]\s+", re.IGNORECASE)
 
+OPTION_COUNT = 4
+
 
 def _depends_on_option_position(option: str) -> bool:
     """Return whether reordering would change or mislabel this option's meaning."""
@@ -41,26 +46,51 @@ def _depends_on_option_position(option: str) -> bool:
     )
 
 
+def _stripped_or_fail(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("must not be blank")
+    return value
+
+
+class Explanation(BaseModel):
+    """The taught content, tagged with the grade it was written for.
+
+    Carrying the grade inside the payload is what lets a downstream consumer —
+    or the audit trail — see which reading level a stored lesson was written to,
+    without needing the original request beside it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    grade: int = Field(ge=1, le=12)
+
+    _clean_text = field_validator("text")(_stripped_or_fail)
+
+
 class MCQ(BaseModel):
+    """One question. The answer is an index, not text.
+
+    Part 1 stored the answer as a string, which made the deterministic option
+    shuffle trivially safe. An index does not survive a permutation on its own,
+    so `app.agents.option_order.balanced_mcq` re-derives it — never reuse a
+    pre-shuffle index.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     question: str
     # A bounded list maps to the portable JSON Schema minItems/maxItems shape.
     # A fixed Python tuple emits prefixItems, which Gemini Generate Content's
     # current SDK schema converter rejects before making the API call.
-    options: list[str] = Field(min_length=4, max_length=4)
-    answer: str
+    options: list[str] = Field(min_length=OPTION_COUNT, max_length=OPTION_COUNT)
+    correct_index: int = Field(ge=0, le=OPTION_COUNT - 1)
 
-    @field_validator("question", "answer")
-    @classmethod
-    def not_blank(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("must not be blank")
-        return v
+    _clean_question = field_validator("question")(_stripped_or_fail)
 
     @model_validator(mode="after")
-    def check_options_and_answer(self):
+    def check_options(self):
         normalized = [o.strip() for o in self.options]
         if any(not o for o in normalized):
             raise ValueError("options must not be blank")
@@ -69,15 +99,37 @@ class MCQ(BaseModel):
                 "options must not depend on positions or labels such as "
                 "'all of the above', 'both A and B', or 'the first option'"
             )
-        if len(set(normalized)) != 4:
-            raise ValueError("options must be four distinct strings")
-        if self.answer.strip() not in normalized:
-            raise ValueError("answer must exactly match one of the four options")
+        if len(set(normalized)) != OPTION_COUNT:
+            raise ValueError(f"options must be {OPTION_COUNT} distinct strings")
         return self
+
+    @property
+    def answer(self) -> str:
+        """The correct option's text. Bounds are guaranteed by the field rules."""
+        return self.options[self.correct_index]
+
+
+class TeacherNotes(BaseModel):
+    """Guidance for the adult, never shown to the child."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    learning_objective: str
+    common_misconceptions: list[str] = Field(min_length=1, max_length=5)
+
+    _clean_objective = field_validator("learning_objective")(_stripped_or_fail)
+
+    @field_validator("common_misconceptions")
+    @classmethod
+    def misconceptions_not_blank(cls, values: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in values]
+        if any(not v for v in cleaned):
+            raise ValueError("common_misconceptions must not contain blank entries")
+        return cleaned
 
 
 class GeneratorInput(BaseModel):
-    """Spec input: {"grade": 4, "topic": "Types of angles"}"""
+    """Spec input: {"grade": 5, "topic": "Fractions as parts of a whole"}"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,108 +138,25 @@ class GeneratorInput(BaseModel):
 
 
 class GeneratorOutput(BaseModel):
+    """Spec output: explanation + mcqs + teacher_notes."""
+
     model_config = ConfigDict(extra="forbid")
 
-    explanation: str
+    explanation: Explanation
     mcqs: list[MCQ] = Field(min_length=1, max_length=10)
+    teacher_notes: TeacherNotes
 
-    @field_validator("explanation")
-    @classmethod
-    def explanation_not_blank(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("explanation must not be blank")
-        return v
+    def moderation_blob(self) -> str:
+        """Every free-text field a model wrote, for the safety pre-filter.
 
-
-TOPIC_DRIFT_FEEDBACK = (
-    "This lesson does not teach the topic that was requested. "
-    "Rewrite it so it teaches the requested topic at this grade level."
-)
-
-
-class ReviewerJudgement(BaseModel):
-    """What the Reviewer model actually returns.
-
-    `addresses_requested_topic` makes the Reviewer's coverage judgement
-    enforceable in code rather than merely encouraged in a prompt. A model that
-    notices the lesson is off-topic but still answers "pass" (which happened: a
-    Grade 1 quantum entanglement request came back as an approved lesson about
-    solids and liquids) is overruled by `topic_drift_forces_fail` below.
-
-    What this does NOT do: it cannot independently detect drift. It enforces
-    what this same model self-reports, so a Reviewer that wrongly believes the
-    lesson is on topic still passes it. The guarantee is "a model that spots
-    drift cannot then approve it", not "drift is impossible".
-
-    This is internal. It is projected to the spec's exact {status, feedback}
-    shape by `to_output()` before it ever reaches the API or the UI.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["pass", "fail"]
-    # Required in the provider schema. When it was optional, Gemini frequently
-    # returned {status: "fail"} without feedback and exhausted the repair loop.
-    feedback: list[str]
-    # Required, with no default: a default of True fails OPEN. If the model
-    # omitted the field the lesson would be treated as on-topic and could be
-    # approved — exactly the failure this field exists to prevent. Required means
-    # an omission raises ValidationError and the Reviewer fails closed instead of
-    # silently approving content whose topic coverage was not judged.
-    addresses_requested_topic: bool
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def status_is_binary(cls, v: str) -> str:
-        v = v.strip().lower()
-        if v not in {"pass", "fail"}:
-            raise ValueError("status must be exactly 'pass' or 'fail'")
-        return v
-
-    @model_validator(mode="after")
-    def topic_drift_forces_fail(self):
-        """Off-topic content can never pass, whatever the model said."""
-        if not self.addresses_requested_topic:
-            self.status = "fail"
-            if TOPIC_DRIFT_FEEDBACK not in self.feedback:
-                self.feedback = [TOPIC_DRIFT_FEEDBACK, *self.feedback]
-        return self
-
-    @model_validator(mode="after")
-    def fail_must_explain(self):
-        # A "fail" with no feedback is useless — the refinement pass needs something to act on.
-        if self.status == "fail" and not [f for f in self.feedback if f.strip()]:
-            raise ValueError("a 'fail' verdict must include at least one feedback item")
-        return self
-
-    def to_output(self) -> "ReviewerOutput":
-        return ReviewerOutput(status=self.status, feedback=self.feedback)
-
-
-class ReviewerOutput(BaseModel):
-    """Spec output: {"status": "pass"|"fail", "feedback": [...]}
-
-    Binary pass/fail is deliberate — it matches the spec and is harder for a
-    judge model to game than a numeric score. This is the public shape; the
-    Reviewer's richer internal judgement lives in ReviewerJudgement.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["pass", "fail"]
-    feedback: list[str] = Field(default_factory=list)
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def status_is_binary(cls, v: str) -> str:
-        v = v.strip().lower()
-        if v not in {"pass", "fail"}:
-            raise ValueError("status must be exactly 'pass' or 'fail'")
-        return v
-
-    @model_validator(mode="after")
-    def fail_must_explain(self):
-        if self.status == "fail" and not [f for f in self.feedback if f.strip()]:
-            raise ValueError("a 'fail' verdict must include at least one feedback item")
-        return self
+        Built here rather than in the moderation service so that adding a field
+        to this schema and forgetting to screen it is a change to one file, not
+        a silent gap between two. `teacher_notes` was exactly that gap when the
+        Part 2 schema landed.
+        """
+        parts = [self.explanation.text, self.teacher_notes.learning_objective]
+        parts.extend(self.teacher_notes.common_misconceptions)
+        for mcq in self.mcqs:
+            parts.append(mcq.question)
+            parts.extend(mcq.options)
+        return " ".join(parts)
