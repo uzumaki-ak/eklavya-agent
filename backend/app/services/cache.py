@@ -1,8 +1,8 @@
 """Result cache — exact-match on a versioned identity hash.
 
 Three rules that matter:
-  - The key includes every input that could change the output (both models, both
-    prompt versions, schema/canonicalizer/policy versions). Change any of them and
+  - The key includes every input that could change the output (all four role
+    configs and prompt versions, plus schema/canonicalizer/policy versions). Change any and
     old entries stop being served instead of silently going stale.
   - The stored value is the FULL pipeline envelope, not just the final answer —
     the UI must still show all three stages on a cache hit.
@@ -16,10 +16,15 @@ import logging
 
 import redis.asyncio as redis
 
-from app.agents.providers import GENERATOR_CONFIG, REVIEWER_CONFIG
+from app.agents.providers import (
+    GENERATOR_CONFIG,
+    REFINER_CONFIG,
+    REVIEWER_CONFIG,
+    TAGGER_CONFIG,
+)
 from app.agents.prompts import PROMPT_VERSIONS
 from app.core.config import settings
-from app.services.envelope import STAGE_FIELDS, cacheable
+from app.services.envelope import CONTENT_FIELDS, cacheable
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +47,20 @@ def cache_digest(grade: int, canonical_topic: str) -> str:
         "provider": settings.llm_provider,
         "generator_model": GENERATOR_CONFIG.model_id,
         "generator_max_tokens": GENERATOR_CONFIG.max_tokens,
+        "refiner_model": REFINER_CONFIG.model_id,
+        "refiner_max_tokens": REFINER_CONFIG.max_tokens,
         "reviewer_model": REVIEWER_CONFIG.model_id,
         "reviewer_max_tokens": REVIEWER_CONFIG.max_tokens,
+        "tagger_model": TAGGER_CONFIG.model_id,
+        "tagger_max_tokens": TAGGER_CONFIG.max_tokens,
         "generator_prompt_version": PROMPT_VERSIONS["generator"],
+        "refiner_prompt_version": PROMPT_VERSIONS["refiner"],
         "reviewer_prompt_version": PROMPT_VERSIONS["reviewer"],
+        "tagger_prompt_version": PROMPT_VERSIONS["tagger"],
+        # How hard the model was asked to think changes what it produces, so
+        # it changes what may be served. Omitting it meant a low->medium
+        # switch kept replaying content generated under the old setting.
+        "thinking_level": settings.gemini_thinking_level,
         "schema_version": settings.schema_version,
         "canonicalizer_version": settings.canonicalizer_version,
         "moderation_policy_version": settings.moderation_policy_version,
@@ -69,7 +84,7 @@ async def get_cached(digest: str) -> tuple[dict, str] | None:
 
     try:
         payload = json.loads(raw)
-        envelope = {field: payload.get(field) for field in STAGE_FIELDS}
+        envelope = {field: payload.get(field) for field in CONTENT_FIELDS}
         status = payload["status"]
     except (json.JSONDecodeError, KeyError):
         logger.warning("corrupt cache entry, ignoring: %s", digest[:12])

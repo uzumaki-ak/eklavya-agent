@@ -1,12 +1,7 @@
 """Job entry point.
 
-Ordering matters here:
-  1. Claim the DB lease, then start the lease guard — everything after this,
-     including cache lookup and follower waiting, is covered by it.
-  2. One deadline for the WHOLE job, set before any waiting. A follower that
-     waited 200s does not then get a fresh generation budget.
-  3. Loop election/following until we either reuse a result or hold a real
-     leadership token. Never generate without one.
+Claim and guard the DB lease first, share one whole-job deadline across waiting
+and generation, and bound election retries. Never generate without leadership.
 """
 
 import asyncio
@@ -14,6 +9,7 @@ import contextlib
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 
 from app.core.config import settings
 from app.core.exceptions import FlightLeadershipLost, LeaseLost, PipelineDeadlineExceeded
@@ -33,16 +29,23 @@ MAX_ELECTION_ROUNDS = 3  # bounded, so a flapping flight can't loop forever
 class JobContext:
     """Everything one job needs, so helpers don't take eight positional args."""
 
-    __slots__ = ("run_id", "worker", "epoch", "digest", "grade", "topic", "deadline")
+    __slots__ = (
+        "run_id", "worker", "epoch", "digest", "user_id", "grade", "topic",
+        "deadline", "started_at",
+    )
 
-    def __init__(self, run_id, worker, epoch, digest, grade, topic, deadline):
+    def __init__(self, run_id, worker, epoch, digest, user_id, grade, topic, deadline):
         self.run_id = run_id
         self.worker = worker
         self.epoch = epoch
         self.digest = digest
+        self.user_id = user_id
         self.grade = grade
         self.topic = topic
         self.deadline = deadline
+        # Wall-clock start for the artifact's timestamps. The monotonic deadline
+        # above measures budget; this one is what a human reads back.
+        self.started_at = datetime.now(timezone.utc)
 
     def remaining(self) -> float:
         return max(0.0, self.deadline - time.monotonic())
@@ -69,7 +72,8 @@ async def run_job(run_id: uuid.UUID, worker_id: str, *, force_reclaim: bool = Fa
             return
 
     ctx = JobContext(
-        run_id, worker_id, epoch, run.cache_digest, run.grade, run.topic_original, deadline
+        run_id, worker_id, epoch, run.cache_digest,
+        run.user_id, run.grade, run.topic_original, deadline,
     )
 
     # The guard covers cache lookup, election, follower waiting, and generation.
@@ -141,7 +145,10 @@ async def _follow(ctx: JobContext) -> bool:
 async def _lead(ctx: JobContext, token: int) -> None:
     """Run the pipeline as elected leader, then publish for any followers."""
     work = asyncio.create_task(
-        execute_graph(ctx.run_id, ctx.worker, ctx.epoch, ctx.grade, ctx.topic, ctx.deadline)
+        execute_graph(
+            ctx.run_id, ctx.worker, ctx.epoch,
+            ctx.user_id, ctx.grade, ctx.topic, ctx.deadline,
+        )
     )
     renewer = asyncio.create_task(
         single_flight.renew_leadership(ctx.digest, ctx.run_id, token)
@@ -164,6 +171,10 @@ async def _lead(ctx: JobContext, token: int) -> None:
         await persist_result(ctx, token, state)
     except (asyncio.TimeoutError, TimeoutError, PipelineDeadlineExceeded):
         logger.warning("run %s exceeded the pipeline deadline", ctx.run_id)
+        # Freeze progress before persistence reads the checkpoint. Otherwise a
+        # node could race the terminal write and finish just after its envelope
+        # was read, leaving that completed attempt out of the artifact.
+        await stop_task(work)
         await persist_failure(ctx, "generator_error", "pipeline_deadline_exceeded", token)
     except FlightLeadershipLost:
         logger.warning("run %s lost flight leadership; stopping duplicate work", ctx.run_id)
@@ -175,6 +186,7 @@ async def _lead(ctx: JobContext, token: int) -> None:
         raise
     except Exception as exc:
         logger.exception("run %s failed unexpectedly", ctx.run_id)
+        await stop_task(work)
         await persist_failure(ctx, "generator_error", type(exc).__name__, token)
     finally:
         await stop_task(renewer)

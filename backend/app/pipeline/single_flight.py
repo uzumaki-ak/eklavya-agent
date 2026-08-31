@@ -20,7 +20,7 @@ from app.core.config import settings
 from app.core.exceptions import FlightLeadershipLost
 from app.db import flights, runs
 from app.db.session import SessionLocal
-from app.services.envelope import STAGE_FIELDS
+from app.pipeline.artifact import envelope_from_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +99,10 @@ async def copy_result(source_run_id: uuid.UUID) -> dict | None:
             source = await runs.get_run(session, source_run_id)
         if source is None or source.status not in {"completed_pass", "completed_fail"}:
             return None
-        # Built from STAGE_FIELDS rather than listed by hand — the hand-written
-        # list silently dropped refinement_count, so a follower showed refined
-        # content while reporting zero refinements.
-        envelope = {field: getattr(source, field) for field in STAGE_FIELDS}
-        return {"status": source.status, **envelope}
+        # Rebuilt from the leader's artifact, not from its summary columns —
+        # those hold four slots and a two-refinement run has six stages, so
+        # copying them would hand the follower a truncated trail.
+        if source.run_artifact is None:
+            return None
+        return {"status": source.status, **envelope_from_artifact(source.run_artifact)}
     return None

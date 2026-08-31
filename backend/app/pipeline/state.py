@@ -1,35 +1,55 @@
 """Pipeline state.
 
-Original and refined outputs are kept in SEPARATE fields — the UI must show both,
-so a refinement must never overwrite the draft it replaced.
+Drafts and reviews are parallel, append-only lists rather than fixed fields.
+Part 1 had four named slots because there was exactly one refinement; two
+refinements produce six artifacts, and naming them `refined_output_2` would make
+the audit trail a function of how many slots someone remembered to add.
+
+The lists hold content that cleared moderation:
+
+    drafts[i]   the content reviewed on attempt i+1
+    reviews[i]  the review of drafts[i]
+
+so attempt N's `refined` is simply `drafts[N]` when it exists. A node never
+rewrites an earlier entry — it returns the previous list plus one item, which is
+what keeps cleared content append-only. Safety-blocked content is not stored;
+`moderation_results` records that the attempt happened and the artifact marks
+its content as withheld. Every attempt is accounted for without returning
+harmful text from history.
 """
 
+from datetime import datetime, timezone
 from typing import Literal, TypedDict
 
 FailureStage = Literal[
     "generator_error",
     "reviewer_error",
+    "tagger_error",
     "moderation_blocked",
     "moderation_error",
 ]
+
+# Draft plus at most two refinements.
+MAX_REFINEMENTS = 2
 
 
 class AgentState(TypedDict, total=False):
     # --- Input ---
     run_id: str
+    user_id: str
     grade: int
     topic: str
     deadline: float  # time.monotonic() cutoff
+    started_at: str  # ISO 8601, UTC
 
-    # --- Stage outputs (each written once, never overwritten) ---
-    original_output: dict | None
-    initial_review: dict | None
-    refined_output: dict | None
-    final_review: dict | None
+    # --- Audit trail: append-only, never rewritten ---
+    drafts: list[dict]
+    reviews: list[dict]
+    tags: dict | None
 
-    # --- Counters: three distinct failure classes, deliberately not merged ---
-    refinement_count: int  # content quality; hard cap of 1 per spec
-    schema_repair_attempts: int  # output failed Pydantic validation
+    # --- Counters: distinct failure classes, deliberately not merged ---
+    refinement_count: int  # content quality; hard cap of 2, enforced by the graph
+    schema_repair_attempts: int  # output failed validation and was asked again
     transport_attempts_total: int  # network/rate-limit retries
     logical_llm_calls: int
 
@@ -39,16 +59,19 @@ class AgentState(TypedDict, total=False):
     moderation_results: dict
 
 
-def new_state(run_id: str, grade: int, topic: str, deadline: float) -> AgentState:
+def new_state(
+    run_id: str, user_id: str, grade: int, topic: str, deadline: float
+) -> AgentState:
     return AgentState(
         run_id=run_id,
+        user_id=user_id,
         grade=grade,
         topic=topic,
         deadline=deadline,
-        original_output=None,
-        initial_review=None,
-        refined_output=None,
-        final_review=None,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        drafts=[],
+        reviews=[],
+        tags=None,
         refinement_count=0,
         schema_repair_attempts=0,
         transport_attempts_total=0,
@@ -57,3 +80,13 @@ def new_state(run_id: str, grade: int, topic: str, deadline: float) -> AgentStat
         error_code=None,
         moderation_results={},
     )
+
+
+def latest_draft(state: AgentState) -> dict | None:
+    drafts = state.get("drafts") or []
+    return drafts[-1] if drafts else None
+
+
+def latest_review(state: AgentState) -> dict | None:
+    reviews = state.get("reviews") or []
+    return reviews[-1] if reviews else None

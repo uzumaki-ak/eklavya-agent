@@ -10,16 +10,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import runs
+from app.db.models import TERMINAL_STATUSES
 from app.db.session import SessionLocal, get_session
 from app.schemas.api import JobResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-TERMINAL_STATUSES = {
-    "completed_pass", "completed_fail", "generator_error",
-    "reviewer_error", "moderation_blocked", "moderation_error",
-}
 
 
 def _to_response(run) -> JobResponse:
@@ -33,6 +29,7 @@ def _to_response(run) -> JobResponse:
         initial_review=run.initial_review,
         refined_output=run.refined_output,
         final_review=run.final_review,
+        tags=run.tags,
         refinement_count=run.refinement_count,
         error_code=run.error_code,
     )
@@ -60,7 +57,11 @@ async def stream_job(job_id: uuid.UUID) -> StreamingResponse:
                 yield f"data: {json.dumps({'error': 'not_found'})}\n\n"
                 return
 
-            payload = _to_response(run).model_dump(mode="json")
+            # by_alias, or the review's verdict ships as "passed" and the UI —
+            # which reads the spec's "pass" — renders every approved lesson as a
+            # failure. FastAPI applies the alias to `response_model` returns
+            # automatically; a hand-rolled dump like this one does not.
+            payload = _to_response(run).model_dump(mode="json", by_alias=True)
             if payload != last_payload:  # only push real changes
                 yield f"data: {json.dumps(payload)}\n\n"
                 last_payload = payload

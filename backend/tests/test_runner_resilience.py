@@ -9,11 +9,13 @@ from unittest.mock import AsyncMock
 from app import worker
 from app.core.exceptions import FlightLeadershipLost
 from app.pipeline import persistence, runner
+from app.schemas.artifact import RunArtifact
+from tests.factories import draft, review_dict
 
 
 def _ctx(seconds: float = 1.0) -> runner.JobContext:
     return runner.JobContext(
-        uuid.uuid4(), "worker-1", 1, "digest", 4, "Types of angles",
+        uuid.uuid4(), "worker-1", 1, "digest", "user-1", 4, "Types of angles",
         time.monotonic() + seconds,
     )
 
@@ -97,3 +99,40 @@ async def test_not_leader_rolls_back_then_terminalizes_without_cache(monkeypatch
     assert persist_failure.await_args.args[1:] == (
         "generator_error", "flight_leadership_lost",
     )
+
+
+async def test_runner_failure_recovers_the_complete_checkpointed_trail(monkeypatch):
+    """A cancelled graph must not become an empty-attempt audit artifact."""
+    envelope = {
+        "drafts": [draft(text="Draft 1"), draft(text="Draft 2")],
+        "reviews": [review_dict(passed=False)],
+        "tags": None,
+        "refinement_count": 1,
+    }
+    run = SimpleNamespace(
+        progress_envelope=envelope,
+        schema_repair_attempts=1,
+        transport_attempts_total=2,
+        logical_llm_calls=3,
+        moderation_results={"draft_1": {"outcome": "clear"}},
+    )
+    session = _Session()
+    write_stage = AsyncMock()
+    monkeypatch.setattr(persistence, "SessionLocal", lambda: session)
+    monkeypatch.setattr(persistence.runs, "get_run", AsyncMock(return_value=run))
+    monkeypatch.setattr(persistence.runs, "write_stage", write_stage)
+
+    await persistence.persist_failure(
+        _ctx(), "generator_error", "pipeline_deadline_exceeded"
+    )
+
+    fields = write_stage.await_args.kwargs
+    artifact = RunArtifact.model_validate(fields["run_artifact"])
+    assert [attempt.draft.explanation.text for attempt in artifact.attempts] == [
+        "Draft 1", "Draft 2"
+    ]
+    assert artifact.attempts[-1].review is None
+    assert artifact.provenance.logical_llm_calls == 3
+    assert artifact.provenance.schema_repair_attempts == 1
+    assert artifact.provenance.transport_attempts_total == 2
+    assert fields["progress_envelope"] is None

@@ -9,7 +9,6 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    JSON,
     CheckConstraint,
     DateTime,
     Index,
@@ -29,6 +28,7 @@ STATUSES = (
     "completed_fail",
     "generator_error",
     "reviewer_error",
+    "tagger_error",
     "moderation_blocked",
     "moderation_error",
 )
@@ -42,7 +42,14 @@ class GenerationRun(Base):
     __tablename__ = "generation_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Two identities, deliberately distinct:
+    #   session_id — the anonymous caller, scoping idempotency keys
+    #   user_id    — the explicit, validated owner that GET /history filters on
+    # An IP-derived session is not a user, so /history never keys off one.
+    session_id: Mapped[str] = mapped_column(String(64))
+    # No single-column index: the composite ix_runs_user_history below already
+    # serves "this user, newest first", which is the only way it is queried.
+    user_id: Mapped[str] = mapped_column(String(128))
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -50,7 +57,7 @@ class GenerationRun(Base):
     topic_original: Mapped[str] = mapped_column(String(200))
     topic_canonical: Mapped[str] = mapped_column(String(200))
     canonicalizer_version: Mapped[str] = mapped_column(String(16))
-    cache_digest: Mapped[str] = mapped_column(String(64), index=True)
+    cache_digest: Mapped[str] = mapped_column(String(64))
 
     status: Mapped[str] = mapped_column(String(32), default="queued")
     current_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -64,17 +71,32 @@ class GenerationRun(Base):
     cache_hit: Mapped[bool] = mapped_column(default=False)
     generator_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reviewer_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tagger_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     generator_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reviewer_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    refiner_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tagger_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     schema_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     moderation_results: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Stage outputs — separate columns so the UI can always show draft vs refined.
+    # The Part 2 source of truth: the complete lifecycle for this run.
+    run_artifact: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Recoverable progress for runner-level failures. Unlike the four summary
+    # columns below, this can hold the middle cycle of a two-refinement run. It
+    # is cleared when the terminal RunArtifact is written.
+    progress_envelope: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Fixed-width summary of the trail above, kept for live progress and for the
+    # Part 1 UI. Derived from the same envelope as the artifact — never built
+    # separately. With two refinements these hold the first cycle and the final
+    # outcome; the middle of the trail lives only in `run_artifact`.
     original_output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     initial_review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     refined_output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     final_review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     refinement_count: Mapped[int] = mapped_column(SmallInteger, default=0)
     schema_repair_attempts: Mapped[int] = mapped_column(SmallInteger, default=0)
@@ -91,8 +113,14 @@ class GenerationRun(Base):
     __table_args__ = (
         UniqueConstraint("session_id", "idempotency_key", name="uq_run_session_idempotency"),
         CheckConstraint(f"status IN {STATUSES}", name="ck_run_status"),
-        CheckConstraint("refinement_count BETWEEN 0 AND 1", name="ck_run_refinement_cap"),
+        # Part 2 permits two refinements. The database backs up the graph's
+        # structural cap rather than restating it: a value of 3 could only come
+        # from an edge that does not exist.
+        CheckConstraint("refinement_count BETWEEN 0 AND 2", name="ck_run_refinement_cap"),
         Index("ix_runs_history", "session_id", "created_at"),
+        Index("ix_runs_digest", "cache_digest"),
+        # GET /history?user_id=... orders by created_at desc for one user.
+        Index("ix_runs_user_history", "user_id", "created_at"),
         # Predicate must match the application query literally or the planner won't use it.
         Index(
             "ix_runs_topic",
@@ -119,3 +147,9 @@ class ContentFlight(Base):
     __table_args__ = (
         CheckConstraint("status IN ('in_progress','done','failed')", name="ck_flight_status"),
     )
+
+
+# Statuses from which a run never moves again. Shared by the polling endpoint,
+# the SSE stream, and the synchronous /generate wait, so "finished" means one
+# thing everywhere.
+TERMINAL_STATUSES = frozenset(STATUSES) - {"queued", "processing"}

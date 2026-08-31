@@ -15,7 +15,7 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.providers import GENERATOR_CONFIG, REVIEWER_CONFIG
+from app.agents.providers import GENERATOR_CONFIG, REVIEWER_CONFIG, TAGGER_CONFIG
 from app.agents.prompts import PROMPT_VERSIONS
 from app.core.config import settings
 from app.core.exceptions import LeaseLost
@@ -26,6 +26,7 @@ async def get_or_create_run(
     session: AsyncSession,
     *,
     session_id: str,
+    user_id: str,
     idempotency_key: str | None,
     request_hash: str,
     grade: int,
@@ -39,6 +40,7 @@ async def get_or_create_run(
         .values(
             id=uuid.uuid4(),
             session_id=session_id,
+            user_id=user_id,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             grade=grade,
@@ -50,8 +52,11 @@ async def get_or_create_run(
             # Recorded at creation so a later prompt change can't rewrite history.
             generator_model=GENERATOR_CONFIG.model_id,
             reviewer_model=REVIEWER_CONFIG.model_id,
+            tagger_model=TAGGER_CONFIG.model_id,
             generator_prompt_version=PROMPT_VERSIONS["generator"],
             reviewer_prompt_version=PROMPT_VERSIONS["reviewer"],
+            refiner_prompt_version=PROMPT_VERSIONS["refiner"],
+            tagger_prompt_version=PROMPT_VERSIONS["tagger"],
             schema_version=settings.schema_version,
             status="queued",
         )
