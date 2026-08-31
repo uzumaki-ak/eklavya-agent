@@ -17,6 +17,9 @@
 .step.done {
   opacity: 1;
 }
+.step.skipped {
+  opacity: 0.7;
+}
 .step-bubble {
   width: 54px;
   height: 54px;
@@ -35,6 +38,10 @@
 .step.done .step-bubble {
   background: var(--green-soft);
   border-color: var(--green);
+}
+.step.skipped .step-bubble {
+  background: var(--amber-soft);
+  border-color: var(--amber);
 }
 .step-label {
   font-family: var(--font-display);

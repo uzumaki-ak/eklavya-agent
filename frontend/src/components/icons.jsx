@@ -142,3 +142,36 @@ export function FoldedNote({ size = 32 }) {
     </svg>
   );
 }
+
+/** Paper luggage tag on a string — the label a finished piece of work gets filed under. */
+export function LabelTag({ size = 32 }) {
+  return (
+    <svg {...box(size)} aria-hidden="true">
+      {/* string, looped through the punched hole */}
+      <path
+        d="M6 9c5 1 8 3 10 6"
+        stroke="#2d2438"
+        strokeWidth="2"
+        strokeLinecap="round"
+        fill="none"
+      />
+      {/* the tag itself, corner cut off toward the hole */}
+      <path
+        d="M17 12l6-5 18 3a3 3 0 012.5 3.4l-2.6 17A3 3 0 0137.5 33L19 30a3 3 0 01-2.5-2.6L15 15a3 3 0 012-3z"
+        fill="#ffd88a"
+        stroke="#2d2438"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      {/* punched hole */}
+      <circle cx="21" cy="14" r="2.2" fill="#fff" stroke="#2d2438" strokeWidth="2" />
+      {/* two written lines, as if labelled by hand */}
+      <path
+        d="M23 22l14 2M22.5 27l9 1.4"
+        stroke="#7c5cff"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

@@ -42,6 +42,36 @@ server {
         proxy_connect_timeout 10s;
     }
 
+    # The Part 2 required surface. Exact-match locations so they win over the
+    # SPA fallback above, which would otherwise hand an evaluator index.html.
+    # Same timeouts as /api/: POST /generate waits for the whole pipeline, so it
+    # needs the long read timeout, not nginx's 60s default.
+    location = /generate {
+        set $spec_upstream "${API_UPSTREAM}";
+        proxy_pass $spec_upstream$request_uri;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 330s;
+        proxy_connect_timeout 10s;
+    }
+
+    location = /history {
+        set $history_upstream "${API_UPSTREAM}";
+        proxy_pass $history_upstream$request_uri;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 30s;
+    }
+
     location /health {
         set $health_upstream "${API_UPSTREAM}";
         proxy_pass $health_upstream$request_uri;

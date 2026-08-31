@@ -11,6 +11,7 @@ const TERMINAL = new Set([
   "completed_fail",
   "generator_error",
   "reviewer_error",
+  "tagger_error",
   "moderation_blocked",
   "moderation_error",
 ]);
@@ -79,9 +80,10 @@ export function useGeneration() {
           },
         );
 
-        // The server's whole-pipeline deadline is 120 seconds. This guard is
-        // deliberately slightly higher and prevents an orphaned row or broken
-        // stream from leaving a child on "Writing" forever.
+        // The server's whole-pipeline deadline is 240 seconds (raised in Part 2:
+        // two refinements plus tagging make the worst path seven model calls).
+        // This guard is deliberately slightly higher and prevents an orphaned row
+        // or broken stream from leaving a child on "Writing" forever.
         timeoutRef.current = setTimeout(() => {
           if (runId !== runIdRef.current) return;
           closeStreamRef.current?.();
@@ -89,7 +91,7 @@ export function useGeneration() {
           setJob(null);
           setError("The helper took too long. Please try again.");
           setBusy(false);
-        }, 130_000);
+        }, 250_000);
       } catch (err) {
         if (err.name === "AbortError" || runId !== runIdRef.current) return;
         setError(err.message);
@@ -113,7 +115,8 @@ export function useGeneration() {
 /** Which loader copy to show, derived from how far the job has got. */
 export function currentStage(job) {
   if (!job) return "generate";
-  if (job.refined_output || job.initial_review?.status === "fail") return "refine";
+  if (job.tags) return "tag";
+  if (job.refined_output || job.initial_review?.pass === false) return "refine";
   if (job.original_output) return "review";
   return "generate";
 }

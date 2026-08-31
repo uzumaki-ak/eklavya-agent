@@ -2,10 +2,10 @@
 // of the check is the point, so a "fail" is framed as the helper catching
 // something, not as the child having done anything wrong.
 //
-// The copy differs between the first and second check: after the first, a
-// rewrite really does follow, but the refinement pass is capped at one, so a
-// failed second check is the end of the road. Saying "the lesson gets
-// rewritten" there would promise something that never arrives.
+// Part 2 made the review quantitative: four 1-5 scores, and feedback anchored to
+// the field it is about. Both are shown. The scores are what the pass/fail
+// decision is actually computed from, so hiding them would leave the verdict
+// looking like an opinion when it is arithmetic.
 
 import { MarkingPen, StarSticker } from "./icons";
 
@@ -17,11 +17,43 @@ const SUMMARY = {
     "The rewrite is still not quite right, so this one isn't approved. Try asking again.",
 };
 
+// Child-facing names for the scored dimensions, in the order they are judged.
+const DIMENSIONS = [
+  ["age_appropriateness", "Right for your grade"],
+  ["correctness", "Facts are right"],
+  ["clarity", "Easy to follow"],
+  ["coverage", "Answers what you asked"],
+];
+
+// Where in the lesson a piece of feedback points, in words rather than a path.
+function plainField(path) {
+  if (path.startsWith("teacher_notes")) return "Notes for the grown-up";
+  if (path.startsWith("explanation")) return "The explanation";
+  const question = path.match(/^mcqs\[(\d+)\]/);
+  return question ? `Question ${Number(question[1]) + 1}` : path;
+}
+
+function ScoreRow({ scores }) {
+  if (!scores) return null;
+  return (
+    <ul className="score-row">
+      {DIMENSIONS.map(([key, label]) => (
+        <li key={key} className="score">
+          <span className="score-label">{label}</span>
+          <span className="score-value" aria-label={`${scores[key]} out of 5`}>
+            {scores[key]}/5
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function ReviewCard({ review, isFinal = false }) {
   if (!review) return null;
 
-  const passed = review.status === "pass";
-  const items = (review.feedback || []).filter((item) => item.trim());
+  const passed = review.pass === true;
+  const items = (review.feedback || []).filter((item) => item?.issue?.trim());
 
   const summary = isFinal
     ? passed
@@ -38,14 +70,19 @@ export default function ReviewCard({ review, isFinal = false }) {
         {passed ? "Checked and approved" : "Found things to fix"}
       </span>
 
-      <h2>{isFinal ? "Second check" : "The checker's report"}</h2>
+      <h2>{isFinal ? "Final check" : "The checker's report"}</h2>
 
       <p className="review-summary">{summary}</p>
+
+      <ScoreRow scores={review.scores} />
 
       {items.length > 0 && (
         <ul className="feedback-list">
           {items.map((item) => (
-            <li key={item}>{item}</li>
+            <li key={`${item.field}:${item.issue}`}>
+              <span className="feedback-field">{plainField(item.field)}</span>
+              {item.issue}
+            </li>
           ))}
         </ul>
       )}

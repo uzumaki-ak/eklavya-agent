@@ -46,14 +46,17 @@ function CrossMark() {
 }
 
 function Question({ mcq, index, disabled }) {
+  // The API sends `correct_index`, so every comparison here is positional.
+  // Comparing option text would silently break the moment two options ever
+  // shared a string.
   const [picked, setPicked] = useState(null);
   const answered = picked !== null;
-  const correct = picked === mcq.answer;
+  const correct = picked === mcq.correct_index;
 
-  const optionClass = (option) => {
+  const optionClass = (position) => {
     if (!answered) return "option";
-    if (option === mcq.answer) return "option correct";
-    if (option === picked) return "option wrong";
+    if (position === mcq.correct_index) return "option correct";
+    if (position === picked) return "option wrong";
     return "option";
   };
 
@@ -65,16 +68,16 @@ function Question({ mcq, index, disabled }) {
       </div>
 
       <div className="options">
-        {mcq.options.map((option) => (
+        {mcq.options.map((option, position) => (
           <button
             key={option}
-            className={optionClass(option)}
-            onClick={() => setPicked(option)}
+            className={optionClass(position)}
+            onClick={() => setPicked(position)}
             disabled={answered || disabled}
           >
             <span>{option}</span>
-            {answered && option === mcq.answer && <TickMark />}
-            {answered && option === picked && option !== mcq.answer && <CrossMark />}
+            {answered && position === mcq.correct_index && <TickMark />}
+            {answered && position === picked && position !== mcq.correct_index && <CrossMark />}
           </button>
         ))}
       </div>

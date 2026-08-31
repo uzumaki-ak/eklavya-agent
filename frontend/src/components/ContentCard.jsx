@@ -22,12 +22,36 @@ const VARIANTS = {
     Icon: EraserFixing,
     tagClass: "tag-final",
     label: "Improved version",
-    // The refinement pass is capped at one, so a rejected rewrite is final.
-    // Promising another rewrite here would be a lie.
+    // Refinement is capped at two passes, so once this card is showing a
+    // rejected rewrite there is nothing further coming. Promising another
+    // rewrite here would be a lie.
     rejectedNote: "The checker still found problems, so this one is not approved.",
     expandLabel: "Show what the rewrite said",
   },
 };
+
+// Written for the adult, so it stays folded away by default rather than
+// competing with the lesson for a child's attention.
+function TeacherNotes({ notes }) {
+  if (!notes) return null;
+  return (
+    <details className="teacher-notes">
+      <summary>For the grown-up</summary>
+      <p className="objective">{notes.learning_objective}</p>
+      {notes.common_misconceptions?.length > 0 && (
+        <>
+          <p className="misconception-heading">Things children often get wrong</p>
+          <ul>
+            {notes.common_misconceptions.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </details>
+  );
+}
+
 
 export default function ContentCard({ content, variant = "draft", title, superseded = false }) {
   const [showRaw, setShowRaw] = useState(false);
@@ -56,8 +80,9 @@ export default function ContentCard({ content, variant = "draft", title, superse
 
       {superseded && !expanded ? null : (
         <>
-          <p className="explanation">{content.explanation}</p>
+          <p className="explanation">{content.explanation?.text}</p>
           <Quiz mcqs={content.mcqs} disabled={superseded} />
+          <TeacherNotes notes={content.teacher_notes} />
         </>
       )}
 

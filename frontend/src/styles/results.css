@@ -90,3 +90,70 @@
   font-size: 0.78rem;
   overflow-x: auto;
 }
+
+/* The four scores the pass/fail decision is computed from. Shown because a
+   verdict with its working visible reads as a check, not an opinion. */
+.score-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.score {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--paper-soft, #f7f4fb);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.score-label {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+.score-value {
+  font-family: var(--font-display, var(--font-body));
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+/* Feedback is anchored to a field, so the child is told where to look. */
+.feedback-field {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  margin-bottom: 2px;
+}
+
+/* Teacher notes are for the adult, so they stay folded away by default. */
+.teacher-notes {
+  margin-top: 18px;
+  border-top: 2px dashed var(--line, #e4dcf0);
+  padding-top: 12px;
+}
+.teacher-notes > summary {
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.teacher-notes .objective {
+  margin: 10px 0 0;
+}
+.teacher-notes .misconception-heading {
+  margin: 12px 0 4px;
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.teacher-notes ul {
+  margin: 0;
+  padding-left: 20px;
+}

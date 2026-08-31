@@ -13,6 +13,7 @@ import { currentStage, useGeneration } from "./hooks/useGeneration";
 const FAILED = new Set([
   "generator_error",
   "reviewer_error",
+  "tagger_error",
   "moderation_blocked",
   "moderation_error",
 ]);
@@ -50,21 +51,23 @@ export default function App() {
             content={job.original_output}
             variant="draft"
             title={job.topic}
-            superseded={job.initial_review?.status === "fail"}
+            superseded={job.initial_review?.pass === false}
           />
 
           {/* Stage 2 — the Reviewer's verdict, shown pass or fail */}
           <ReviewCard review={job.initial_review} />
 
-          {/* Stage 3 — the single refinement pass, only if the reviewer failed it.
-              A rewrite that fails its own check stays visible (the brief requires
-              showing it) but is marked unapproved with the quiz disabled, so a
-              child cannot practise on content the checker just rejected. */}
+          {/* Stage 3 — the refinement, only if a review failed. Up to two
+              refinements can run; this card shows the last one, and the full
+              ordered trail lives in the run's artifact. A rewrite that fails its
+              own check stays visible (the brief requires showing it) but is
+              marked unapproved with the quiz disabled, so a child cannot
+              practise on content the checker just rejected. */}
           <ContentCard
             content={job.refined_output}
             variant="final"
             title={job.topic}
-            superseded={job.final_review?.status === "fail"}
+            superseded={job.final_review?.pass === false}
           />
           <ReviewCard review={job.final_review} isFinal />
 
