@@ -12,8 +12,8 @@ teachable, while separate patterns cover passive instructions, violence,
 self-harm, and explicit sexual material.
 
 SCOPE — this is a demo-grade pre-filter, not production child safety. It reasons
-about word proximity, not meaning, so an obfuscated or euphemistic request will
-get through. Replace it with a hosted classifier before real children use this.
+about word proximity, not meaning, so euphemistic harm may pass and unusual
+legitimate phrasing may be blocked. Use a hosted classifier for a real product.
 """
 
 import logging
@@ -22,13 +22,12 @@ import re
 from app.core.config import settings
 from app.core.exceptions import ModerationBlocked, ModerationUnavailable
 from app.schemas.content import GeneratorOutput
+from app.services.moderation_targets import PROTECTED_TARGET_PATTERN
 
 logger = logging.getLogger(__name__)
 
-# Direct capability actions. These are matched against the harmful object they
-# actually act on, not merely any object somewhere later in the sentence. That
-# distinction keeps "create a report about the atomic bomb" teachable while
-# blocking "create a bomb".
+# Direct actions are matched against the object they actually act on, keeping
+# "create a report about a bomb" distinct from "create a bomb".
 _ACTION = (
     r"(?:make|making|build|building|construct|constructing|assemble|assembling|"
     r"create|creating|manufacture|manufacturing|synthesi[sz]e|synthesi[sz]ing|"
@@ -37,9 +36,8 @@ _ACTION = (
     r"stealing|get|getting|use|using)"
 )
 
-# Only harmless glue may sit between the action and its object. Arbitrary words
-# are intentionally excluded: in "create a school report about a bomb", create
-# acts on report, not bomb.
+# Only harmless glue may sit between action and object; arbitrary words would
+# make "create a school report about a bomb" unsafe by accident.
 _GLUE = (
     r"\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|some|my|your)\s+)?"
     r"(?:(?:homemade|working|real|illegal|powerful)\s+){0,2}"
@@ -56,9 +54,8 @@ _ILLICIT_DRUG = r"(?:illegal\s+drugs?|drugs?\s+illegally|street\s+drugs?)"
 
 _OBJECT = rf"(?:{_WEAPON}|{_HARD_DRUG}|{_ILLICIT_DRUG})"
 
-# Finding drugs is ambiguous: a child may be seeking them, while police or
-# customs may find them as part of a legitimate civics lesson. Match the person
-# asking for access (or a direct imperative), not the bare verb "find".
+# Match a person seeking drugs (or a direct imperative), not the bare verb
+# "find" in a legitimate police or customs lesson.
 _DRUG_OBJECT = rf"(?:{_HARD_DRUG}|{_ILLICIT_DRUG}|drugs?)"
 _SEEKING_DRUGS = (
     rf"(?:\b(?:where|how)\s+(?:can|could|do|should|would)\s+(?:i|we|you)\s+find\b"
@@ -79,6 +76,10 @@ _EVASION = (
     r"my\s+mum|my\s+mom|my\s+dad|teachers?)\s+(?:knowing|finding\s+out)|"
     r"secretly|from\s+a\s+dealer|on\s+the\s+black\s+market)"
 )
+
+# Enumerate protected people/animals; legitimate science objects are unbounded.
+_PROTECTED_TARGET = PROTECTED_TARGET_PATTERN
+_TARGET_OWNER = r"(?:my|your|his|her|our|their|a|an|the|this|that|another)"
 
 _BLOCKED_PATTERNS = [
     # Direct action on a harmful object, including short imperatives such as
@@ -112,17 +113,13 @@ _BLOCKED_PATTERNS = [
     r"\b(?:kill\s+myself|end\s+my\s+life|commit\s+suicide|take\s+my\s+own\s+life)\b",
     r"\bsuicide\s+(?:method|technique|instruction|note)s?\b",
 
-    # Violence directed at other people.
-    # The target is structurally open: children are more likely to name a
-    # relationship ("my classmate", "a bully") than say "someone". Fixed target
-    # enumeration let the most plausible real-world requests through.
+    # Closed person/animal targets keep science and PE objects teachable.
     r"\b(?:(?:how|ways?|steps?)\b[^.?!\n]{0,20}?\bto\s+)?"
     r"(?:hurt|kill|attack|stab|shoot|poison)\s+"
     r"(?:someone|somebody|people|a\s+person|him|her|them|"
-    r"(?:other\s+)?(?:students?|kids?|children|classmates?|teachers?|people|"
-    r"bullies|friends?|siblings?|neighbou?rs?|animals?|pets?|dogs?|cats?)|"
-    r"(?:my|your|his|her|our|their|a|an|the|this|that|another)\s+"
-    r"[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*)?)\b",
+    rf"(?:other\s+)?{_PROTECTED_TARGET}|"
+    rf"{_TARGET_OWNER}\s+(?:[a-z][a-z'-]*\s+){{0,2}}(?:other\s+)?"
+    rf"{_PROTECTED_TARGET})\b",
     r"\bhurt\s+(?:someone|somebody|people)\s+(?:badly|seriously)\b",
 
     # Sexually explicit material. Deliberately does NOT match "sex" or "sexual",
@@ -136,9 +133,8 @@ _BLOCKED_PATTERNS = [
 ]
 _BLOCKED_RE = re.compile("|".join(_BLOCKED_PATTERNS), re.IGNORECASE)
 
-# Self-harm phrasing that is pastoral rather than method-seeking. Scoped to the
-# self-harm group: a global override let "how to build a bomb to support
-# terrorists" through, because "support" appeared in it.
+# Scope pastoral phrasing to self-harm; a global override once let a weapons
+# request through merely because it contained "support".
 _SELF_HARM_RE = re.compile(
     r"\b(?:kill|hurt|harm|injure|cut)\s+(?:my|your|him|her|them)self\b|"
     r"\b(?:kill\s+myself|end\s+my\s+life|commit\s+suicide|take\s+my\s+own\s+life)\b",
@@ -183,12 +179,13 @@ async def moderate_topic(topic: str) -> dict:
 
 
 async def moderate_content(output: GeneratorOutput) -> dict:
-    """Check generated content before it can reach a child's screen."""
+    """Check generated content before it can reach a child's screen.
+
+    The text comes from the schema itself: assembling it here would have let
+    Part 2's new `teacher_notes` bypass the filter, a gap that fails silently.
+    """
     try:
-        blob = output.explanation + " " + " ".join(
-            q.question + " " + " ".join(q.options) for q in output.mcqs
-        )
-        if _is_blocked(blob):
+        if _is_blocked(output.moderation_blob()):
             logger.warning("generated content blocked by moderation")
             raise ModerationBlocked("generated content")
         return _clear("content")
