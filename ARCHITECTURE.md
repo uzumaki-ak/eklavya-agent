@@ -1,6 +1,6 @@
 # Eklavya AI Assessment — Architecture Plan
 
-**Revision 9 — IMPLEMENTED.** Updated 28 Aug 2026.
+**Revision 10 — IMPLEMENTED (Part 2).** Updated 28 Aug 2026.
 
 Rev 8 fixed what an independent evaluation found: moderation failed in both
 directions, the Reviewer was never told the topic (so it approved a lesson on the
@@ -8,21 +8,54 @@ wrong subject), `refinement_count` was lost on both reuse paths, a rejected rewr
 still offered a playable quiz, and this document claimed constants and tests that
 did not exist.
 
-Rev 9 fixes two defects found by using the deployed app rather than by reading it:
+Rev 9 fixed two defects found by using the deployed app rather than by reading it:
 the Reviewer could fail open when it omitted its own topic-coverage flag, and the
 Generator put the correct answer first in six of nine sampled questions, making the
-quiz answerable without reading it. Constants below are checked against
-`app/core/config.py`; the Testing section lists only tests that run.
+quiz answerable without reading it.
+
+Rev 10 implements Part 2. Every data shape changed: the explanation is nested and
+grade-tagged, the answer is an index rather than text, `teacher_notes` is new, the
+review is four 1-5 scores with field-anchored feedback, and a `ContentTags` block
+classifies approved work. Two new agents (Refiner, Tagger), two refinements
+instead of one, and a `RunArtifact` that is now the source of truth. Part 1's
+queue, leasing, caching, single-flight and moderation are unchanged and carried
+forward. Constants below are checked against `app/core/config.py`; the Testing
+section lists only tests that run.
+
+Three things Part 2 broke that were not obvious from the brief, each now fixed and
+tested: the option shuffle silently invalidates `correct_index` unless the index
+is re-derived from the answer *text*; `teacher_notes` bypassed the moderation
+filter, which fails silently because moderation still returns "clear"; and seven
+model calls do not fit a budget sized for four.
 
 ## Source requirement (from assessment PDF)
 
-**Generator Agent** — input `{"grade": int, "topic": str}`, output `{"explanation": str, "mcqs": [{"question": str, "options": [str,str,str,str], "answer": str}]}`. Language must match grade level, concepts correct, structure deterministic.
+**Generator Agent** — input `{"grade": int, "topic": str}`, output
+`{"explanation": {"text", "grade"}, "mcqs": [{"question", "options": [4], "correct_index"}], "teacher_notes": {"learning_objective", "common_misconceptions": [...]}}`.
+Validation failure gets exactly one repair retry, then fails gracefully.
 
-**Reviewer Agent** — formal input: Generator's output JSON only. Output `{"status": "pass"|"fail", "feedback": [str, ...]}`. Evaluates age appropriateness, conceptual correctness, clarity. Spec's I/O contract omits grade; `target_grade` injected as pipeline context.
+**Reviewer Agent** — formal input: Generator's output JSON only. Output
+`{"scores": {age_appropriateness, correctness, clarity, coverage} each 1-5, "pass": bool, "feedback": [{"field", "issue"}]}`.
+Pass thresholds must be defined and documented; feedback must reference specific
+fields. Spec's I/O contract omits grade and topic; both are injected as pipeline
+context, because neither age appropriateness nor coverage is judgeable without them.
 
-**Refinement**: on `fail`, re-run Generator once with feedback embedded. Hard cap of one pass.
+**Refiner Agent** — improves content using reviewer feedback. Maximum two
+refinement attempts, each logged. Still failing → `rejected`.
 
-**UI (mandatory)**: displays Generator output, Reviewer feedback, and refined output (if any) as distinct stages — including on cache hits.
+**Tagger Agent** — classifies **approved content only**: subject, topic, grade,
+difficulty, content_type, blooms_level.
+
+**Orchestration (the real test)** — one `RunArtifact` per run: `run_id`, `input`,
+ordered `attempts` of `{attempt, draft, review, refined}`, `final` with
+`approved | rejected` plus content and tags, and `timestamps`. Deterministic flow,
+bounded retries, full audit trail.
+
+**Backend** — `POST /generate` runs the full pipeline and returns the RunArtifact;
+`GET /history?user_id=...` returns stored artifacts. Postgres persistence.
+
+**UI (optional in Part 2, retained)**: displays draft, review, and refinement as
+distinct stages — including on cache hits.
 
 Audience: school-age kids. Target scale: "1000s of users," low-hundreds concurrent LLM calls at peak.
 
@@ -31,34 +64,147 @@ Audience: school-age kids. Target scale: "1000s of users," low-hundreds concurre
 ## Orchestration: LangGraph "Reflection" pattern
 
 ```python
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
+    run_id: str
+    user_id: str
     grade: int
     topic: str
-    original_output: dict | None
-    initial_review: dict | None
-    refined_output: dict | None
-    final_review: dict | None
-    refinement_count: int
+    deadline: float          # time.monotonic() cutoff
+    started_at: str          # ISO 8601, UTC
+
+    drafts: list[dict]       # drafts[i] is the content reviewed on attempt i+1
+    reviews: list[dict]      # reviews[i] is the review of drafts[i]
+    tags: dict | None
+
+    refinement_count: int    # hard cap of 2, enforced by the graph's shape
     schema_repair_attempts: int
     transport_attempts_total: int
     logical_llm_calls: int
-    failure_stage: str | None    # None | "generator_error" | "reviewer_error" | "moderation_blocked" | "moderation_error"
+
+    failure_stage: str | None    # generator_error | reviewer_error | tagger_error
+                                 # | moderation_blocked | moderation_error
     error_code: str | None
-    pipeline_deadline: float
+    moderation_results: dict
 ```
 
+Drafts and reviews are **append-only parallel lists**, not fixed slots. Part 1 had
+four named fields because there was exactly one refinement; two refinements
+produce six artifacts, and naming them `refined_output_2` would make the audit
+trail a function of how many slots someone remembered to add. A node returns the
+previous list plus one item and never rewrites an earlier entry, which is what
+makes cleared content append-only. A moderation-stopped attempt is represented
+with `draft: null`, `content_withheld: true`, and a structured moderation result;
+the blocked text itself is deliberately not retained or returned by history.
+
 ```
-moderate_topic → blocked/error → END
-  → clear: generate_original → deadline/retries exhausted: "generator_error" → END
-      → success: [moderate output — inlined in generate_original_node] → blocked/error → END
-          → clear: review_original → deadline/retries exhausted: "reviewer_error" → END (never fabricate a verdict)
-              → pass: END
-              → fail: refine_once (writes ONLY refined_output)
-                  → [moderate output — inlined in refine_node] → blocked/error → END
-                  → clear: review_refined → END regardless of pass/fail
+moderate ─► generate ─► review_1 ─┬─ pass ──────────────────────────► tag ─► approved
+                                  └─ fail ─► refine_1 ─► review_2 ─┬─ pass ─► tag
+                                                                   └─ fail ─►
+            refine_2 ─► review_3 ─┬─ pass ─► tag ─► approved
+                                  └─ fail ──────────► rejected
 ```
 
-A Reviewer **fail** (even final) is still shown with feedback. Moderation block/error is suppressed, tracked as two distinct statuses. `add_conditional_edges`, `set_entry_point`, `END` confirmed current in LangGraph 1.2.11.
+**The two-refinement cap is structural, not counted.** The graph is unrolled and
+acyclic: exactly two refine nodes exist, `refine_2` is reachable only from
+`review_2`, and `review_3` has no edge to any refinement. A third refinement is
+not expressible. A counted loop was the obvious alternative and was rejected —
+it converts a guarantee about the graph into a comparison a later edit can get
+wrong. `test_pipeline_routing.py` asserts the compiled graph's shape (node set,
+inbound edges, no backward edge), not only the routing functions.
+
+`tag` is reachable only from a passing review, which is how "classify approved
+content only" is enforced. All three review positions are the *same* node
+function: a review node cannot tell which position it occupies, so it cannot
+choose its own successor.
+
+A Reviewer **fail** (even final) is still shown with feedback. Moderation-blocked
+text is withheld while the attempt and outcome remain auditable; block and check
+failure use distinct statuses. `add_conditional_edges`, `set_entry_point`, `END`
+confirmed current in LangGraph 1.2.11.
+
+## The RunArtifact: one derivation, two projections
+
+Part 2's non-negotiable is a single object capturing the whole lifecycle. The risk
+with adding one to a system that already stores stage columns is obvious: two
+representations of the same run that can disagree. Part 1 already lived that bug —
+the cache path and the worker path each derived a run's status separately, and the
+cache paths always claimed "pass", so a cached failing review was replayed as a
+success.
+
+So there is exactly one path from pipeline state to stored data:
+
+```
+state ──► envelope ──┬──► RunArtifact      (source of truth, JSONB)
+                     └──► summary columns  (queue state, indexing, live progress)
+```
+
+`app/services/envelope.py` owns the envelope; `app/pipeline/artifact.py` is the
+only place a RunArtifact is constructed. The Part 1 columns survive because
+`executor.py` streams them per node to drive the live UI — but with two
+refinements there are up to six artifacts and four slots, so they now mean *first
+draft, first review, final content, final review*. The middle of the trail lives
+only in the artifact. A single-flight follower therefore rebuilds from the
+leader's artifact (`envelope_from_artifact`), not from its columns, which would
+hand it three of six stages.
+
+Structural invariants are enforced in the schema rather than trusted from the
+pipeline, so a malformed audit trail cannot be persisted and later read back as
+fact: attempts numbered consecutively from 1, each visible `refined` identical
+to the next visible `draft`, withheld content never stored, no refinement after a
+passing review, approved runs carrying both content and tags, rejected runs
+carrying none.
+
+Identity is never borrowed. A cache hit reuses another run's *content* and builds
+its own artifact with its own `run_id`, `user_id`, timestamps and
+`cache_hit: true`, so the trail never claims work it did not do.
+
+## Pass thresholds, and why the model is not told them
+
+`correctness` must be 5; `age_appropriateness`, `clarity` and `coverage` must each
+be at least 4 (`app/schemas/review.py`). Correctness has no tolerance because a
+lesson that is 80% factually right is not 80% acceptable for this audience; the
+other three are matters of degree where a judge model's 4-versus-5 call is mostly
+noise.
+
+The verdict is **derived, not trusted**. `pass` is recomputed from the scores, the
+outstanding feedback, and the topic-coverage flag. A model that returns
+`pass: true` beside `correctness: 2` is overruled and the disagreement is logged —
+Part 1 already had to overrule exactly that behaviour for topic drift, and making
+the whole verdict a pure function generalises it.
+
+The Reviewer is not shown the thresholds. A model told the bar learns to clear it,
+which converts a measurement into a formality. Whether the bar is set correctly is
+an empirical question, so `run_reviewer_eval` reports the score distribution over
+the known-good cases: a dimension few good lessons clear is a miscalibrated bar,
+not a strict one.
+
+Feedback must cite a real field path (`explanation.text`,
+`teacher_notes.learning_objective`, `mcqs[1].options[2]`). A hallucinated location
+is unactionable for the Refiner, so it fails validation and goes back to the model
+rather than into the audit trail.
+
+## Timing budget: seven calls, not four
+
+Part 1's worst path was four model calls. Part 2's is seven — generate, review,
+refine, review, refine, review, tag — and each can carry its one repair retry, so
+fourteen physical calls is the true upper bound. The 120s pipeline deadline was
+sized for four and had to move; the failing path is precisely the one a reviewer
+will exercise on purpose ("watch it fail twice, then pass").
+
+Three timeouts, strictly ordered so each layer fails inward first and the outer
+one never truncates a run that was about to terminate cleanly:
+
+| Layer | Setting | Value |
+|---|---|---:|
+| Pipeline | `pipeline_deadline_seconds` | 240s |
+| Queue | `saq_job_timeout_seconds` | 270s |
+| Proxy | nginx `proxy_read_timeout` | 330s |
+
+These are sized, not measured. The right values come from observed provider
+latency; what is fixed is the ordering and the requirement that the synchronous
+endpoint fail gracefully before the proxy gives up. Note also that at
+`llm_requests_per_minute = 14` a single worst-case run consumes half a minute's
+budget, so the free-tier demo should not be load-tested while being graded.
 
 ## Structured output: provider-native behind one interface
 
@@ -123,7 +269,7 @@ Cross-field rules raise local `pydantic.ValidationError`, not caught by the tran
 **Fixed (round 4, points 2 and 3)**: the deadline was previously a soft check re-evaluated before each attempt — it didn't cover semaphore waits, and Tenacity's backoff could sleep past it regardless. Now one outer `asyncio.timeout_at(deadline)` wraps the *entire* pipeline (semaphore waits, retries, repair loops, follower waits — everything), which is the actual hard boundary. A pipeline-level timeout is explicitly distinguished from a per-call timeout so the former is terminal, not retried.
 
 ```python
-PIPELINE_DEADLINE_SECONDS = 120   # hard internal budget; SAQ job timeout (150s) is a ~30s cleanup margin above it, not the primary guard
+PIPELINE_DEADLINE_SECONDS = 240   # hard internal budget; SAQ job timeout (270s) leaves cleanup margin above it
 
 class LLMCallTimeout(Exception): pass
 class PipelineDeadlineExceeded(Exception): pass
@@ -205,19 +351,18 @@ async def run_pipeline(run_id, grade, topic) -> None:
 ```
 
 **Request ceiling**: one `call_llm` invocation has at most 2 Tenacity attempts,
-but the 120-second outer pipeline deadline is the controlling wall-clock bound.
-Gemini 3.7 runs at `thinking_level="low"` for this simple educational workload;
-Google documents that level for minimizing latency and cost. A 40-second call
-watchdog, two transport attempts, and a 120-second whole-job deadline prevent
-the UI from waiting for several minutes. Track `transport_attempts_total` and
-`logical_llm_calls`.
+but the 240-second outer pipeline deadline is the controlling wall-clock bound.
+The submitted `gemini-3.5-flash-lite` configuration uses
+`thinking_level="medium"`, selected from the measured Reviewer baseline below.
+A 40-second call watchdog and two transport attempts bound each provider call.
+Track `transport_attempts_total` and `logical_llm_calls`.
 
 Pin `tenacity==9.1.4`. No gateway: the app has two direct adapters but exactly
 one active provider per deployment.
 
 ## Queue/worker: SAQ + Redis
 
-Pin `saq[redis]==0.26.4`. SAQ job timeout **150s** — ~30s cleanup margin above the 120s internal deadline, not the primary guard (the outer `timeout_at` above is). Heartbeat enabled, refreshed by a background task every 10s for the life of the job (a single call at start does not survive a multi-minute pipeline). Sweep interval, heartbeat threshold, shutdown grace period kept consistent and shorter than 150s. SAQ's `key` dedupes *enqueue* only — see Idempotency & job leasing for the real correctness boundary.
+Pin `saq[redis]==0.26.4`. SAQ job timeout **270s** — ~30s cleanup margin above the 240s internal deadline, not the primary guard (the outer `timeout_at` above is). Heartbeat enabled, refreshed by a background task every 10s for the life of the job (a single call at start does not survive a multi-minute pipeline). Sweep interval, heartbeat threshold, shutdown grace period kept consistent and shorter than 270s. SAQ's `key` dedupes *enqueue* only — see Idempotency & job leasing for the real correctness boundary.
 
 ## Idempotency & job leasing
 
@@ -301,7 +446,7 @@ On error, the same fenced pattern sets `status='failed'` (single statement, no t
 
 **Follower**: polls with jitter (500ms, backing off to 2s, capped), bounded by its own `PIPELINE_DEADLINE_SECONDS`, while also renewing its own job lease throughout (it's still "processing" its own row the whole time it waits). On `status='done'`: read `result_run_id`'s `generation_runs` row and copy the envelope into the follower's own row with `cache_hit=true`, complete its job. On `status='failed'` or an expired `lease_expires_at`: re-run the election query itself — this naturally works since the `WHERE` clause already allows takeover once a flight has failed or expired.
 
-**Cache key** — uses the same `GENERATOR_CONFIG`/`REVIEWER_CONFIG` objects the call site uses (zero drift possible), no `temperature`:
+**Cache key** — uses the same four role configs and prompt-version map as the call sites (zero drift possible), no `temperature`:
 
 ```python
 def cache_key(grade: int, canonical_topic: str) -> str:
@@ -309,8 +454,13 @@ def cache_key(grade: int, canonical_topic: str) -> str:
         "grade": grade, "topic": canonical_topic,
         "provider": settings.llm_provider,
         "generator_model": GENERATOR_CONFIG.model_id, "generator_max_tokens": GENERATOR_CONFIG.max_tokens,
+        "refiner_model": REFINER_CONFIG.model_id, "refiner_max_tokens": REFINER_CONFIG.max_tokens,
         "reviewer_model": REVIEWER_CONFIG.model_id, "reviewer_max_tokens": REVIEWER_CONFIG.max_tokens,
-        "generator_prompt_version": PROMPT_VERSIONS["generator"], "reviewer_prompt_version": PROMPT_VERSIONS["reviewer"],
+        "tagger_model": TAGGER_CONFIG.model_id, "tagger_max_tokens": TAGGER_CONFIG.max_tokens,
+        "generator_prompt_version": PROMPT_VERSIONS["generator"],
+        "refiner_prompt_version": PROMPT_VERSIONS["refiner"],
+        "reviewer_prompt_version": PROMPT_VERSIONS["reviewer"],
+        "tagger_prompt_version": PROMPT_VERSIONS["tagger"],
         "schema_version": SCHEMA_VERSION, "canonicalizer_version": CANONICALIZER_VERSION,
         "moderation_policy_version": MODERATION_POLICY_VERSION,
     }
@@ -326,18 +476,25 @@ application result cache and is not a substitute for it.
 
 ```
 generation_runs(
-  id, session_id, idempotency_key, request_hash,
+  id, session_id, user_id, idempotency_key, request_hash,
   grade, topic_original, topic_canonical, canonicalizer_version,
   status text NOT NULL CHECK (status IN (
     'queued','processing','completed_pass','completed_fail',
-    'generator_error','reviewer_error','moderation_blocked','moderation_error'
+    'generator_error','reviewer_error','tagger_error',
+    'moderation_blocked','moderation_error'
   )),
   current_stage, lease_owner, lease_expires_at, lease_epoch bigint NOT NULL DEFAULT 0,
   cache_hit,
-  generator_model, reviewer_model, generator_prompt_version, reviewer_prompt_version, schema_version,
+  generator_model, reviewer_model, tagger_model,
+  generator_prompt_version, reviewer_prompt_version,
+  refiner_prompt_version, tagger_prompt_version, schema_version,
   moderation_results jsonb,
-  original_output jsonb, initial_review jsonb, refined_output jsonb null, final_review jsonb null,
-  refinement_count smallint CHECK (refinement_count BETWEEN 0 AND 1),
+  run_artifact jsonb,                      -- the terminal Part 2 source of truth
+  progress_envelope jsonb,                 -- full recoverable trail while processing
+  original_output jsonb, initial_review jsonb,   -- fixed-width summary of the above,
+  refined_output jsonb, final_review jsonb,      -- for live progress and indexing
+  tags jsonb,
+  refinement_count smallint CHECK (refinement_count BETWEEN 0 AND 2),
   transport_attempts_total smallint, schema_repair_attempts smallint, logical_llm_calls smallint,
   token_usage jsonb, error_code text null,
   created_at, started_at, completed_at
@@ -345,6 +502,7 @@ generation_runs(
 
 UNIQUE (session_id, idempotency_key);
 CREATE INDEX generation_runs_history_idx ON generation_runs (session_id, created_at DESC);
+CREATE INDEX generation_runs_user_history_idx ON generation_runs (user_id, created_at DESC);
 CREATE INDEX generation_runs_topic_idx ON generation_runs (grade, topic_canonical, created_at DESC)
   WHERE status IN ('completed_pass', 'completed_fail');
 
@@ -352,6 +510,21 @@ content_flights(cache_digest PRIMARY KEY, leader_run_id, lease_expires_at, fenci
 ```
 
 `row_version` renamed to `lease_epoch` throughout — it now only changes on takeover (ownership), not on every content write, matching standard fencing-token semantics more precisely.
+
+**Two identities, deliberately distinct.** `session_id` is the anonymous caller and
+scopes idempotency keys; `user_id` is the explicit, validated owner that
+`GET /history` filters on. An IP-derived session is not a user, and treating one as
+such would return a stranger's runs to whoever shares a NAT gateway.
+
+**Migration `0002` preserves old rows rather than rewriting them.** `user_id` is
+added nullable, backfilled from `session_id`, then made NOT NULL. Pre-Part-2 rows
+keep a null `run_artifact`: they were produced under a different content schema,
+and manufacturing an artifact for them would put a v6-shaped payload behind a
+v7-shaped contract. `GET /history` reports terminal rows without an artifact,
+including rows whose schema version is null. Stored artifacts are attempted
+regardless of version, so a routine schema bump cannot erase readable audit
+history; genuinely incompatible payloads are counted rather than crashing the
+whole response.
 
 **Stretch (phase 2)**: append-only `generation_run_events` audit table; `pg_trgm` on `topic_canonical` for admin-only near-duplicate discovery.
 
@@ -382,7 +555,7 @@ who self-harms" reads as educational rather than as a request for method.
 > **Still demo-grade, and this matters.** It is a high-precision local pre-filter,
 > not production child safety: it cannot reason about context, and an obfuscated
 > request will get through. **Replace it with a hosted classifier before real
-> children use this.** Bumping `moderation_policy_version` (now `v3`) invalidates
+> children use this.** Bumping `moderation_policy_version` (now `v6`) invalidates
 > content cached under the old rules — without that, lessons the broken filter
 > cleared would keep being served.
 
@@ -434,13 +607,21 @@ known to be one of the four and a permutation cannot break that. It runs inside
 sees. Prompting for randomness was the obvious alternative and was rejected:
 models self-randomise position badly, and an advisory rule cannot be tested.
 
+Part 2 sharpened this considerably. The answer is now `correct_index`, so a
+permutation does not merely bias the quiz — it makes every answer *wrong* unless
+the index is re-derived. `balanced_mcq` captures the correct option's **text**
+before reordering, permutes, then looks the text back up, and returns a
+re-validated MCQ rather than mutating in place. This is the single highest-risk
+change in the Part 2 migration and has its own regression test asserting the
+answer text survives from every one of the four starting positions.
+
 Validation also rejects choices whose meaning depends on the original position
 (`All of the above`, `Both A and B`, label-prefixed choices, and ordinal option
 references). The Generator's existing bounded schema-repair path then regenerates
 the MCQ before the deterministic permutation runs. Cache schema `v6` prevents
 pre-fix lessons with those choices from being reused.
 
-The generator prompt (`v6`) states the same rule. Two layers again, for the usual
+The generator prompt (`v7`) states the same rule. Two layers again, for the usual
 reason: the prompt rule is advisory and the validator is not — but a model told up
 front costs no repair round, and each repair is a whole extra LLM call.
 
@@ -450,9 +631,24 @@ Self-hosted Langfuse if tracing is added. Not required for the core submission.
 
 ## API layer: FastAPI
 
-- `POST /generate {grade, topic}` (optional `Idempotency-Key`) → `202 {job_id}`, or `409` on key/payload mismatch
-- `GET /jobs/{job_id}` → `{status, original_output, initial_review, refined_output, final_review}`
-- Optional `GET /jobs/{job_id}/stream` (SSE)
+Two surfaces, one pipeline.
+
+**Required (Part 2), unprefixed as specified:**
+- `POST /generate {grade, topic, user_id?}` → the complete `RunArtifact`
+- `GET /history?user_id=...` → that user's stored artifacts
+
+**Part 1's asynchronous surface, retained for the streaming UI:**
+- `POST /api/generate` (optional `Idempotency-Key`) → `202 {job_id}`, or `409` on key/payload mismatch
+- `GET /api/jobs/{job_id}` → the live stage view
+- `GET /api/jobs/{job_id}/stream` (SSE)
+
+The synchronous endpoint does **not** run the graph in the request handler. It
+submits through `services/submission.py` — the same path the asynchronous endpoint
+uses — and then waits for the same worker to finish the same job. The two surfaces
+therefore share the *execution*, not merely some helper code, so there is nothing
+for a second implementation to drift from. The trade is that the API now depends
+on a running worker, which is the dependency the async endpoint always had, made
+visible to the caller as latency.
 - Health check endpoint (`/health` readiness, `/health/live` liveness)
 - **No HTTP rate limiting.** `services/rate_limit.py` caps LLM requests per minute,
   which is a provider-quota guard, not request throttling. A public deployment is
@@ -541,23 +737,36 @@ volumes:
 
 ## Testing
 
-`cd backend && pytest` — 140 tests. This section lists only tests that exist; an
-earlier revision described an intended suite as though it were implemented, which
-is exactly the kind of claim a reviewer checks.
+`cd backend && pytest` — 259 tests, no API key required. This section lists only
+tests that exist; an earlier revision described an intended suite as though it
+were implemented, which is exactly the kind of claim a reviewer checks.
+
+**The three mandatory Part 2 cases** are in `test_orchestration.py` and drive the
+real compiled graph with the four agents mocked, so a wrong edge fails there even
+when every routing unit test passes:
+
+1. Generator schema failure → one repair → graceful rejection
+2. fail → refine → pass → approved **and tagged**
+3. fail → refine → fail → refine → fail → rejected **and never tagged**
 
 **What is covered**
 
 | File | Covers |
 |---|---|
-| `test_schemas.py` (14 functions; 7 position cases parametrised) | The spec's I/O contract: four distinct, position-independent options, answer among them, no blanks, `extra="forbid"`, binary reviewer status, fail-requires-feedback |
-| `test_pipeline_routing.py` (10) | Graph routing, and that the one-refinement cap holds even when the second review also fails |
-| `test_topic_fidelity.py` (14) | Required topic judgement, forced off-topic failure, delimiter escaping, single-flight envelope reuse, evaluator baselines |
-| `test_reviewer_repair.py` (4) | Reviewer schema repair success, bounded exhaustion, required fields, all eval cases schema-valid |
-| `test_option_order.py` (7) | MCQ option order is stable, idempotent, lossless, and spreads the answer across all four positions |
-| `test_provider_refactor.py` (8) | Provider abstraction, retry predicates, config/cache-key coherence |
-| `test_moderation.py` (4, parametrised over 57 topics) | Curriculum topics pass; plainly phrased harm requests are blocked; the output gate runs the same rules |
-| `test_runner_resilience.py` (4) | Deadline termination, flight-leadership loss, rollback-then-terminalize |
+| `test_orchestration.py` (7) | The three mandatory cases, end to end through `compiled_graph` |
+| `test_orchestration_edges.py` (10) | Pass on the second refinement, a clean first draft, the enforced verdict driving the graph, failure counters (including post-call moderation), and the reviewer/tagger/moderation failure paths |
+| `test_pipeline_routing.py` (16) | Routing functions **and the compiled graph's shape** — exactly two refine nodes, no backward edge, `tag` reachable only from a review |
+| `test_review_schema.py` (21) | Score bounds, the documented thresholds, derived-verdict enforcement, overruling a model that claims a pass its scores do not support, existent indexed field paths, Tagger enums |
+| `test_schemas.py` (13) | The Generator contract: `correct_index` bounds, four distinct position-independent options, nested explanation, required `teacher_notes`, `extra="forbid"` |
+| `test_artifact.py` (14) | RunArtifact invariants (numbering, refinement chain, safety-withheld attempts, approved-implies-tagged) and the envelope round trip a follower depends on |
+| `test_topic_fidelity.py` (13) | Topic reaches every prompt, delimiter escaping, no agent is invited to change the topic, thresholds are not leaked to the Reviewer, follower reuse carries the whole trail, and the live eval report accepts its full row shape |
+| `test_option_order.py` (9) | Order is stable, idempotent and lossless, spreads the answer across all four positions, **and `correct_index` still points at the same answer text afterwards** |
+| `test_provider_refactor.py` (11) | Provider abstraction, retry predicates, and all four agents' model/prompt cache-key coherence |
+| `test_reviewer_repair.py` (6) | Bounded repair for the Reviewer and Tagger, hallucinated field paths sent back, `pass` survives the alias into the provider schema |
+| `test_moderation.py` (8, parametrised over 82 topics) | Curriculum and science/PE phrasing pass, every enumerated target form is covered, plainly phrased harm requests are blocked, and **`teacher_notes` cannot bypass the output gate** |
+| `test_runner_resilience.py` (5) | Deadline termination, flight-leadership loss, rollback-then-terminalize, and recovery of the complete checkpointed trail on runner failure |
 | `test_canonicalize.py` (4) | Cache-key normalisation and its alias map |
+| `test_history.py` (7) | `/history` is scoped to one validated user without hiding readable older artifacts; null-version terminal rows are counted; idempotency is user-bound |
 | `test_rate_limit.py` (3) | Sliding-window RPM limiter |
 
 **Reviewer evaluation set** — `tests/reviewer_golden_set.py` holds 12 hand-labelled
@@ -568,6 +777,49 @@ is a script rather than part of `pytest`. Read balanced accuracy and both class
 recalls, not raw agreement; an always-pass or always-fail Reviewer scores only 50%
 balanced accuracy.
 
+Part 2 added a **calibration** section to that report: for the known-good cases it
+prints the mean score per dimension and how many clear the required bar, plus how
+often the thresholds overruled the model's own verdict. Runtime enforcement and
+golden-set evaluation solve different problems and both are kept — enforcement
+decides one run, the golden set decides whether the bar is set in the right place.
+
+**A known limitation of the set**: `teacher_notes` is identical and content-free
+across all twelve cases, because varying it would add a second defect signal and
+confound what is being measured. Teacher-note quality is therefore unmeasured.
+
+**Part 2 baseline (2026-08-29, `gemini-3.5-flash-lite`)**, measured across all
+three reasoning budgets:
+
+| `GEMINI_THINKING_LEVEL` | Balanced acc. | Defect recall | Good-content recall | Topic drift |
+|---|---:|---:|---:|---:|
+| low | 81% | 88% (7/8) | 75% (3/4) | 12/12 |
+| **medium** (shipped) | **88%** | **100% (8/8)** | 75% (3/4) | 12/12 |
+| high | 88% | 100% (7/7) | 75% (3/4) | 11/11 |
+
+The reasoning budget was chosen from this table rather than from taste. At `low`
+the deployed system approved a Grade 1 lesson whose quiz distractors were "a big
+red truck" and "only when it rains" — answerable by elimination, which the
+Reviewer's own criteria call a defect. `medium` is the only setting that catches
+that case (`elimination_only_distractors`).
+
+`high` is not merely unnecessary, it is worse: one case exhausted the Reviewer's
+2048-token budget mid-reasoning and returned `finish_reason=MAX_TOKENS`, so no
+judgement came back at all — which is why it is scored over 11 cases. More
+reasoning inside a fixed output budget eventually crowds out the answer. That is
+a concrete argument for measuring a setting instead of assuming more is better.
+
+Thinking level is part of the cache identity (`services/cache.py`). It was not
+originally, which meant changing it altered what the system produced while
+content generated under the old setting kept being served.
+
+The one remaining error at medium is over-strictness, not leniency: a
+well-simplified Grade 1 gravity lesson scores 4 on correctness and the `== 5`
+threshold rejects it. The thresholds overruled the model in **0/12** cases, so
+the strictness lives in the scoring, not the enforcement. Four known-good cases
+cannot justify moving the bar. This is a small, hand-labelled calibration
+baseline rather than a production quality claim; rerun it after changing the
+model, prompt, threshold, or reasoning budget.
+
 **What is deliberately NOT covered, and why**
 
 - **Leasing, fencing, single-flight, idempotency** have no integration tests.
@@ -577,7 +829,10 @@ balanced accuracy.
 - **Reviewer prompt tuning.** The golden set measures; nothing tunes against it
   yet. Tuning without a baseline swings into over-rejection, which is worse than
   the leniency it would fix.
-- **No CI.** Tests run locally and in the container, not on push.
+- **CI:** `.github/workflows/ci.yml` runs Ruff, compilation, all backend tests,
+  the full migration chain against PostgreSQL 18.6, `alembic check`, and the
+  frontend production build on every push and pull request. No LLM key is
+  provided, so CI cannot spend model quota.
 
 **Load test** — `loadtest/locustfile.py`, tens/low-hundreds of concurrent
 submissions. `POST /api/generate` should stay in the tens of milliseconds since it
@@ -607,17 +862,3 @@ postgres:18.6 (Docker image)
 redis:8.10.1 (Docker image)
 Compose: rolling spec, no version: key — document minimum supported Compose CLI version
 ```
-
----
-
-## Codex review log
-
-**Round 1**: 6/8 points required changes — applied in rev 2. LangGraph-drop recommendation considered, not applied.
-
-**Round 2**: confirmed LangGraph-keep reasonable. 9 further bugs fixed in rev 3.
-
-**Round 3**: 8 further issues fixed in rev 4, three independently spot-checked before applying (temperature removal, `anthropic==1.1.0`, Redis version).
-
-**Round 4**: 5 further issues, all applied in rev 5. One (`max_retries=0` missing) was a self-inflicted regression from the rev 4 rewrite, not a new finding. The other four were real gaps: `content_flights`'s `RETURNING` clause doesn't behave the way a follower needed (Postgres returns zero rows, not the existing row, when the `WHERE` blocks the conflict update — fixed with a fallback `SELECT`, a `'failed'` terminal state, shorter renewable leases, fenced completion, jittered bounded follower polling, and a durable `result_run_id`); the 240s deadline was a soft per-attempt check, not an actual hard boundary — fixed with one outer `asyncio.timeout_at` wrapping the whole pipeline and a distinction between per-call and pipeline-level timeouts; lease renewal was prose with no wiring — fixed with a background renewal task and a `lease_epoch` that only changes on takeover, not every write; and a Vite runtime-env-var approach that does nothing in a production build — fixed with a same-origin reverse-proxy frontend instead of an injected absolute URL.
-
-**Round 5** (final — architecture confirmed ready for implementation): 2 surgical fixes applied in rev 6. Clamping `_clamped_wait` to 0 only stopped Tenacity from *sleeping*, not from *retrying* — a separate deadline-aware `stop` condition was needed (`stop_after_attempt(2) | _deadline_stop(deadline)`), plus a pre-attempt check so no HTTP request starts after the budget is gone, plus fixing the Retry-After read (`exc.response.headers`, not a nonexistent `exc.retry_after` attribute). And the `content_flights` election query allowed takeover of a `'done'` flight, meaning a request arriving just after the leader finished would recompute from scratch instead of reusing `result_run_id` — fixed by making `'done'` never a takeover condition (only `'failed'` or an actually-expired `'in_progress'` lease), tightening the flight-lease renewal cadence to ~15s against its 45s lease, and combining the leader's `generation_runs` completion write with the `content_flights` → `done` transition into one transaction so `done` can never become visible before the result is durably persisted.

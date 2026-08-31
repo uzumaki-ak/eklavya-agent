@@ -1,11 +1,22 @@
 """The hand-labelled cases. See `reviewer_golden_set.py` for the method.
 
-Four cases expect `pass` and eight expect `fail`. The imbalance is deliberate —
+Four cases expect a pass and eight expect a fail. The imbalance is deliberate —
 defects are more varied than correctness — which is exactly why the evaluator
 reports balanced accuracy rather than raw agreement.
+
+`teacher_notes` is deliberately identical and content-free across every case.
+The set exists to measure verdicts on the explanation and the questions; varying
+the notes would add a second defect signal and confound what is being measured.
+It is a known limitation, not an oversight: teacher-note quality is unmeasured.
 """
 
 from dataclasses import dataclass
+
+# Valid, neutral, and identical everywhere — see the module docstring.
+NEUTRAL_NOTES = {
+    "learning_objective": "Recall and explain the ideas taught in this lesson.",
+    "common_misconceptions": ["Children often confuse the terms in this topic."],
+}
 
 
 @dataclass(frozen=True)
@@ -14,22 +25,31 @@ class GoldenCase:
     grade: int
     topic: str
     content: dict
-    expected_status: str  # "pass" | "fail"
+    expected_pass: bool
     expected_on_topic: bool
     why: str
 
 
 def _case(name, grade, topic, explanation, mcqs, expected, on_topic, why):
-    """Compact constructor: (question, [options], answer) tuples become MCQ dicts."""
+    """Compact constructor: (question, [options], answer) tuples become MCQ dicts.
+
+    The answer is given as text and converted to `correct_index` here, so the
+    cases stay readable and a mislabelled fixture is impossible — a text answer
+    that is not among its options raises at import rather than becoming a
+    silently wrong index.
+    """
     return GoldenCase(
         name=name,
         grade=grade,
         topic=topic,
         content={
-            "explanation": explanation,
-            "mcqs": [{"question": q, "options": o, "answer": a} for q, o, a in mcqs],
+            "explanation": {"text": explanation, "grade": grade},
+            "mcqs": [
+                {"question": q, "options": o, "correct_index": o.index(a)} for q, o, a in mcqs
+            ],
+            "teacher_notes": dict(NEUTRAL_NOTES),
         },
-        expected_status=expected,
+        expected_pass=expected == "pass",
         expected_on_topic=on_topic,
         why=why,
     )
